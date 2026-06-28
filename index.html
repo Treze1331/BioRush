@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistema Reprodutor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800;900&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section id="menu-screen" class="screen screen-active" aria-labelledby="main-title">
+      <div class="menu-panel">
+        <p class="eyebrow">Biologia</p>
+        <h1 id="main-title">Sistema Reprodutor</h1>
+        <div class="intro-card">
+          <p>
+            Teste seus conhecimentos sobre órgãos reprodutores, gametas, fecundação,
+            puberdade, ciclo menstrual e hormônios em uma rodada rápida de 10 questões.
+          </p>
+        </div>
+        <button id="start-button" class="primary-action pulse" type="button">JOGAR</button>
+      </div>
+    </section>
+
+    <section id="game-screen" class="screen" aria-live="polite">
+      <div class="game-layout">
+        <header class="top-bar">
+          <div class="progress-track" aria-label="Progresso da rodada">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <div class="round-info">
+            <p id="question-counter" class="question-counter">Questão 1 de 10</p>
+            <div class="timer-pill" aria-live="polite">
+              <span class="timer-label">Tempo</span>
+              <span id="timer-text">15s</span>
+            </div>
+          </div>
+        </header>
+
+        <article class="question-card">
+          <p id="question-text">Carregando pergunta...</p>
+        </article>
+
+        <div id="answers-grid" class="answers-grid" aria-label="Alternativas"></div>
+      </div>
+    </section>
+
+    <section id="result-screen" class="screen" aria-labelledby="result-title">
+      <div class="result-card">
+        <p class="eyebrow">Resultado final</p>
+        <h2 id="result-title">Rodada concluída</h2>
+        <p id="score-text" class="score-text">Você acertou 0 de 10!</p>
+        <div class="percentage-ring">
+          <span id="percentage-text">0%</span>
+        </div>
+        <img id="success-image" class="success-image" src="assets/obrigado.png" alt="Obrigado pela atenção" hidden>
+        <p id="feedback-text" class="feedback-text">Continue estudando e tente novamente.</p>
+        <button id="restart-button" class="secondary-action" type="button">Jogar Novamente</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
