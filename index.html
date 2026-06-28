@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sistema Reprodutor</title>
+  <title>BioRush</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800;900&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -12,16 +12,91 @@
 <body>
   <main class="app-shell">
     <section id="menu-screen" class="screen screen-active" aria-labelledby="main-title">
-      <div class="menu-panel">
-        <p class="eyebrow">Biologia</p>
-        <h1 id="main-title">Sistema Reprodutor</h1>
-        <div class="intro-card">
-          <p>
-            Teste seus conhecimentos sobre órgãos reprodutores, gametas, fecundação,
-            puberdade, ciclo menstrual e hormônios em uma rodada rápida de 10 questões.
+      <div class="menu-panel menu-panel-home">
+        <header class="menu-hero">
+          <p class="eyebrow">Biologia</p>
+          <h1 id="main-title">BioRush - Sistema Reprodutor</h1>
+          <p class="menu-subtitle">
+            Órgãos reprodutores, gametas, fecundação, puberdade e hormônios em 10 questões.
           </p>
+          <ul class="menu-badges" aria-label="Informações da partida">
+            <li>10 questões</li>
+            <li>30s por questão</li>
+            <li>Até 8 jogadores</li>
+          </ul>
+        </header>
+
+        <form id="menu-form" class="menu-form" novalidate>
+          <div class="menu-card menu-card-profile">
+            <div class="menu-card-head">
+              <span class="menu-card-icon" aria-hidden="true">👤</span>
+              <div>
+                <h2 class="menu-card-title">Seu apelido</h2>
+                <p class="menu-card-desc">Aparece na sala e no ranking da partida.</p>
+              </div>
+            </div>
+            <input id="nickname-input" class="text-input" type="text" maxlength="20" placeholder="Como quer ser chamado?" autocomplete="nickname">
+          </div>
+
+          <div class="menu-modes">
+            <article class="menu-card menu-card-solo">
+              <div class="menu-card-head">
+                <span class="menu-card-icon" aria-hidden="true">📖</span>
+                <div>
+                  <h2 class="menu-card-title">Modo solo</h2>
+                  <p class="menu-card-desc">Estude no seu ritmo, sem sala.</p>
+                </div>
+              </div>
+              <button id="solo-button" class="primary-action menu-mode-button" type="button">Jogar solo</button>
+            </article>
+
+            <article class="menu-card menu-card-multi">
+              <div class="menu-card-head">
+                <span class="menu-card-icon" aria-hidden="true">👥</span>
+                <div>
+                  <h2 class="menu-card-title">Multiplayer</h2>
+                  <p class="menu-card-desc">Crie uma sala ou entre com o código.</p>
+                </div>
+              </div>
+
+              <div class="menu-multi-actions">
+                <button id="create-room-button" class="secondary-action menu-secondary menu-mode-button" type="button">Criar sala</button>
+
+                <div class="join-room-group">
+                  <label class="field-label" for="room-code-input">Código da sala</label>
+                  <div class="join-room-row">
+                    <input id="room-code-input" class="text-input text-input-code" type="text" maxlength="6" placeholder="ABC123" autocomplete="off">
+                    <button id="join-room-button" class="primary-action join-room-button" type="button">Entrar</button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <p id="menu-error" class="form-error" hidden></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="lobby-screen" class="screen" aria-labelledby="lobby-title">
+      <div class="menu-panel lobby-panel">
+        <p class="eyebrow">Sala multiplayer</p>
+        <h2 id="lobby-title">Aguardando jogadores</h2>
+        <p class="lobby-code">Código: <strong id="lobby-code-text">------</strong></p>
+        <p id="lobby-status-text" class="lobby-status">Aguardando jogadores</p>
+
+        <div class="intro-card lobby-card">
+          <p class="field-label">Jogadores na sala</p>
+          <ul id="lobby-players-list" class="lobby-players"></ul>
         </div>
-        <button id="start-button" class="primary-action pulse" type="button">JOGAR</button>
+
+        <p id="lobby-error" class="form-error" hidden></p>
+
+        <div class="lobby-actions">
+          <button id="start-game-button" class="primary-action" type="button">Iniciar partida</button>
+          <button id="edit-nickname-button" class="secondary-action menu-secondary" type="button">Editar apelido</button>
+          <button id="leave-lobby-button" class="secondary-action menu-secondary" type="button">Sair da sala</button>
+        </div>
       </div>
     </section>
 
@@ -35,7 +110,7 @@
             <p id="question-counter" class="question-counter">Questão 1 de 10</p>
             <div class="timer-pill" aria-live="polite">
               <span class="timer-label">Tempo</span>
-              <span id="timer-text">15s</span>
+              <span id="timer-text">30s</span>
             </div>
           </div>
         </header>
@@ -45,6 +120,8 @@
         </article>
 
         <div id="answers-grid" class="answers-grid" aria-label="Alternativas"></div>
+
+        <footer id="leaderboard-bar" class="leaderboard-bar" hidden aria-live="polite"></footer>
       </div>
     </section>
 
@@ -56,13 +133,15 @@
         <div class="percentage-ring">
           <span id="percentage-text">0%</span>
         </div>
+        <div id="result-podium" class="result-podium" hidden></div>
         <img id="success-image" class="success-image" src="assets/obrigado.png" alt="Obrigado pela atenção" hidden>
         <p id="feedback-text" class="feedback-text">Continue estudando e tente novamente.</p>
         <button id="restart-button" class="secondary-action" type="button">Jogar Novamente</button>
+        <button id="back-to-menu-button" class="secondary-action menu-secondary" type="button">Voltar ao menu</button>
       </div>
     </section>
   </main>
 
-  <script src="script.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
