@@ -83,6 +83,7 @@ let currentPlayers = [];
 let gameMode = "solo";
 let hasShownMultiplayerResults = false;
 let feedbackTimeoutId = null;
+let waitingForMultiplayerAdvance = false;
 
 function getOrCreateClientId() {
   let stored = localStorage.getItem(CLIENT_ID_KEY);
@@ -505,15 +506,12 @@ function startAdvancePolling() {
     }
 
     try {
-      await supabase.rpc("try_advance_question", { p_room_id: session.roomId });
-    } catch (error) {
-      console.warn("Não foi possível avançar a pergunta automaticamente:", error);
-    }
-
-    try {
       const syncedRoom = await syncMultiplayerRoomState();
       if (syncedRoom) {
         await finishMultiplayerIfNeeded(syncedRoom);
+        if (!hasShownMultiplayerResults) {
+          await handleRoomQuestionChange(syncedRoom);
+        }
       }
     } catch (error) {
       console.error("Erro ao verificar o estado da sala multiplayer:", error);
@@ -662,6 +660,7 @@ function renderQuestion() {
   questionText.textContent = currentQuestion.question;
   answersGrid.innerHTML = "";
   isLocked = false;
+  waitingForMultiplayerAdvance = false;
 
   const useRoomTime = gameMode === "multi" && currentRoom?.question_started_at && currentRoom?.question_time != null;
   questionStartedAt = useRoomTime ? new Date(currentRoom.question_started_at).getTime() : Date.now();
@@ -712,17 +711,11 @@ async function advanceMultiplayerAfterFeedback() {
     return;
   }
 
-  if (currentIndex + 1 >= TOTAL_QUESTIONS) {
-    await finishMultiplayerIfNeeded({
-      status: "finished",
-      current_question_index: TOTAL_QUESTIONS,
-      total_questions: TOTAL_QUESTIONS
-    });
-    return;
+  if (waitingForMultiplayerAdvance) {
+    feedbackTimeoutId = window.setTimeout(() => {
+      void advanceMultiplayerAfterFeedback();
+    }, 1000);
   }
-
-  currentIndex += 1;
-  renderQuestion();
 }
 
 async function handleAnswer(selectedButton, correctAnswer) {
@@ -738,6 +731,7 @@ async function handleAnswer(selectedButton, correctAnswer) {
 
   if (gameMode === "multi" && session) {
     let submissionData = null;
+    waitingForMultiplayerAdvance = true;
 
     try {
       const { data, error } = await supabase.rpc("submit_answer", {
@@ -776,21 +770,6 @@ async function handleAnswer(selectedButton, correctAnswer) {
       console.warn("Não foi possível atualizar o ranking após a resposta:", error);
     }
 
-    try {
-      await supabase.rpc("try_advance_question", { p_room_id: session.roomId });
-    } catch (error) {
-      console.warn("Falha ao avançar a sala no multiplayer, usando fallback local:", error);
-    }
-
-    if (currentIndex + 1 >= TOTAL_QUESTIONS) {
-      await finishMultiplayerIfNeeded({
-        status: "finished",
-        current_question_index: TOTAL_QUESTIONS,
-        total_questions: TOTAL_QUESTIONS
-      });
-      return;
-    }
-
     feedbackTimeoutId = window.setTimeout(() => {
       void advanceMultiplayerAfterFeedback();
     }, FEEDBACK_DELAY);
@@ -823,6 +802,8 @@ async function handleTimeout() {
   const correctAnswer = currentQuestions[currentIndex].answer;
 
   if (gameMode === "multi" && session) {
+    waitingForMultiplayerAdvance = true;
+
     try {
       await supabase.rpc("submit_answer", {
         p_player_id: session.playerId,
@@ -841,21 +822,6 @@ async function handleTimeout() {
       renderLeaderboard(currentPlayers);
     } catch (error) {
       console.warn("Não foi possível atualizar o ranking após o timeout:", error);
-    }
-
-    try {
-      await supabase.rpc("try_advance_question", { p_room_id: session.roomId });
-    } catch (error) {
-      console.warn("Falha ao avançar a sala após timeout, usando fallback local:", error);
-    }
-
-    if (currentIndex + 1 >= TOTAL_QUESTIONS) {
-      await finishMultiplayerIfNeeded({
-        status: "finished",
-        current_question_index: TOTAL_QUESTIONS,
-        total_questions: TOTAL_QUESTIONS
-      });
-      return;
     }
 
     feedbackTimeoutId = window.setTimeout(() => {
