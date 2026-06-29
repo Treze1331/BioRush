@@ -552,6 +552,34 @@ function isRoomFinished(room) {
   return Boolean(room.status === "finished" || currentQuestionIndex >= totalQuestions);
 }
 
+function countReadyPlayers(players = currentPlayers) {
+  if (!Array.isArray(players)) {
+    return 0;
+  }
+
+  return players.filter((player) => Boolean(player?.has_answered_current_question)).length;
+}
+
+function shouldAdvanceMultiplayerQuestion(room) {
+  if (!room || isRoomFinished(room)) {
+    return true;
+  }
+
+  const totalPlayers = Array.isArray(currentPlayers) ? currentPlayers.length : 0;
+  if (!totalPlayers) {
+    return false;
+  }
+
+  const readyPlayers = countReadyPlayers(currentPlayers);
+  const roomIndex = Number(room.current_question_index ?? currentIndex);
+
+  if (roomIndex > currentIndex) {
+    return true;
+  }
+
+  return readyPlayers >= totalPlayers;
+}
+
 async function finishMultiplayerIfNeeded(room = null) {
   if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
     return false;
@@ -592,7 +620,9 @@ async function handleRoomQuestionChange(room) {
 
   const remoteIndex = Number(room.current_question_index ?? currentIndex);
   if (!isRoomFinished(room) && Number.isFinite(remoteIndex) && remoteIndex <= currentIndex) {
-    return;
+    if (!shouldAdvanceMultiplayerQuestion(room)) {
+      return;
+    }
   }
 
   if (await finishMultiplayerIfNeeded(room)) {
@@ -794,7 +824,16 @@ async function handleAnswer(selectedButton, correctAnswer) {
       console.warn("Não foi possível atualizar o ranking após a resposta:", error);
     }
 
-    scheduleMultiplayerAdvance();
+    try {
+      const roomState = await syncMultiplayerRoomState();
+      if (roomState) {
+        currentRoom = roomState;
+        await handleRoomQuestionChange(roomState);
+      }
+    } catch (error) {
+      console.warn("Não foi possível sincronizar a sala após a resposta:", error);
+    }
+
     return;
   }
 
@@ -846,7 +885,16 @@ async function handleTimeout() {
       console.warn("Não foi possível atualizar o ranking após o timeout:", error);
     }
 
-    scheduleMultiplayerAdvance();
+    try {
+      const roomState = await syncMultiplayerRoomState();
+      if (roomState) {
+        currentRoom = roomState;
+        await handleRoomQuestionChange(roomState);
+      }
+    } catch (error) {
+      console.warn("Não foi possível sincronizar a sala após o timeout:", error);
+    }
+
     return;
   }
 
@@ -907,6 +955,10 @@ function advanceToNextQuestionInMultiplayer() {
   if (Number.isFinite(remoteIndex) && remoteIndex > currentIndex) {
     pendingQuestionIndex = remoteIndex;
     tryRenderPendingQuestion();
+    return;
+  }
+
+  if (!shouldAdvanceMultiplayerQuestion(currentRoom)) {
     return;
   }
 
