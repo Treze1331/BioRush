@@ -245,49 +245,14 @@ function getCurrentAnswerTimeLeft() {
 }
 
 async function submitMultiplayerAnswer(answer, isCorrect) {
-  const payload = {
+  return supabase.rpc("submit_answer", {
     p_player_id: session.playerId,
     p_client_id: clientId,
     p_answer: answer,
     p_time_left: getCurrentAnswerTimeLeft(),
     p_question_index: currentIndex,
     p_is_correct: isCorrect
-  };
-
-  const response = await supabase.rpc("submit_answer", payload);
-  if (!response.error) {
-    return response;
-  }
-
-  const message = response.error.message || "";
-  const isOldFunctionSignature =
-    message.includes("p_is_correct") ||
-    message.includes("p_question_index") ||
-    message.includes("schema cache") ||
-    message.includes("Could not find the function");
-
-  if (!isOldFunctionSignature) {
-    return response;
-  }
-
-  const { p_is_correct, ...payloadWithoutCorrectness } = payload;
-  const responseWithoutCorrectness = await supabase.rpc("submit_answer", payloadWithoutCorrectness);
-  if (!responseWithoutCorrectness.error) {
-    return responseWithoutCorrectness;
-  }
-
-  const legacyMessage = responseWithoutCorrectness.error.message || "";
-  const isLegacyWithoutQuestionIndex =
-    legacyMessage.includes("p_question_index") ||
-    legacyMessage.includes("schema cache") ||
-    legacyMessage.includes("Could not find the function");
-
-  if (!isLegacyWithoutQuestionIndex) {
-    return responseWithoutCorrectness;
-  }
-
-  const { p_question_index, ...legacyPayload } = payloadWithoutCorrectness;
-  return supabase.rpc("submit_answer", legacyPayload);
+  });
 }
 
 function renderLeaderboard(players) {
@@ -352,9 +317,11 @@ function renderLobby() {
   }
 
   lobbyCodeText.textContent = session.code;
+  const isWaitingRoom = currentRoom?.status === "waiting";
   startGameButton.hidden = !session.isHost;
+  startGameButton.disabled = !isWaitingRoom;
   lobbyStatusText.textContent =
-    currentRoom?.status === "waiting"
+    isWaitingRoom
       ? `Aguardando jogadores (${currentPlayers.length}/${MAX_PLAYERS})`
       : "Partida em andamento...";
 
@@ -568,12 +535,7 @@ async function startMultiplayerFromLobby() {
   }
 
   showError(lobbyError, "");
-
-  try {
-    await supabase.from("players").update({ has_answered_current_question: false }).eq("room_id", session.roomId);
-  } catch (error) {
-    console.warn("NÃ£o foi possÃ­vel limpar respostas antes de iniciar:", error);
-  }
+  startGameButton.disabled = true;
 
   const { error } = await supabase.rpc("start_game", {
     p_room_id: session.roomId,
@@ -582,6 +544,22 @@ async function startMultiplayerFromLobby() {
 
   if (error) {
     showError(lobbyError, error.message);
+    startGameButton.disabled = false;
+  }
+}
+
+async function ensureMultiplayerQuestionTimer() {
+  if (!session?.roomId) {
+    return;
+  }
+
+  const { error } = await supabase.rpc("ensure_question_timer", {
+    p_room_id: session.roomId,
+    p_client_id: clientId
+  });
+
+  if (error) {
+    throw error;
   }
 }
 
@@ -598,14 +576,8 @@ async function beginMultiplayerGame() {
   currentRoom = await fetchRoom(session.roomId);
   currentPlayers = await fetchPlayers(session.roomId);
 
-  if (!currentRoom?.question_started_at && session.isHost) {
-    await supabase
-      .from("rooms")
-      .update({
-        question_started_at: getQuestionStartedAtIso(),
-        question_time: Number(currentRoom?.question_time ?? QUESTION_TIME)
-      })
-      .eq("id", session.roomId);
+  if (!currentRoom?.question_started_at) {
+    await ensureMultiplayerQuestionTimer();
     currentRoom = await fetchRoom(session.roomId);
   }
 
@@ -736,15 +708,6 @@ function maybeScheduleMultiplayerAdvance() {
   }, FEEDBACK_DELAY);
 }
 
-function isMissingAdvanceFunction(error) {
-  const message = error?.message || "";
-  return (
-    message.includes("advance_question_if_ready") ||
-    message.includes("schema cache") ||
-    message.includes("Could not find the function")
-  );
-}
-
 async function requestMultiplayerAdvance(questionIndex) {
   if (!session?.roomId || gameMode !== "multi" || currentIndex !== questionIndex) {
     multiplayerAdvancePending = false;
@@ -759,12 +722,10 @@ async function requestMultiplayerAdvance(questionIndex) {
     });
 
     if (error) {
-      if (isMissingAdvanceFunction(error)) {
-        await fallbackAdvanceMultiplayerQuestion(questionIndex);
-      } else {
-        throw error;
-      }
-    } else if (data?.status === "finished") {
+      throw error;
+    }
+
+    if (data?.status === "finished") {
       currentRoom = {
         ...(currentRoom || {}),
         status: "finished",
@@ -782,54 +743,6 @@ async function requestMultiplayerAdvance(questionIndex) {
     console.warn("NÃ£o foi possÃ­vel avanÃ§ar a pergunta multiplayer:", error);
   } finally {
     multiplayerAdvancePending = false;
-  }
-}
-
-async function fallbackAdvanceMultiplayerQuestion(questionIndex) {
-  if (!session?.isHost || !haveAllPlayersAnswered() || currentIndex !== questionIndex) {
-    return;
-  }
-
-  const nextIndex = questionIndex + 1;
-
-  if (nextIndex >= TOTAL_QUESTIONS) {
-    await supabase
-      .from("rooms")
-      .update({
-        status: "finished",
-        current_question_index: TOTAL_QUESTIONS
-      })
-      .eq("id", session.roomId)
-      .eq("current_question_index", questionIndex);
-    return;
-  }
-
-  await supabase
-    .from("players")
-    .update({ has_answered_current_question: false })
-    .eq("room_id", session.roomId);
-
-  await supabase
-    .from("rooms")
-    .update({
-      current_question_index: nextIndex,
-      question_started_at: getQuestionStartedAtIso(),
-      question_time: getCurrentQuestionTimeLimit(),
-      status: "playing"
-    })
-    .eq("id", session.roomId)
-    .eq("current_question_index", questionIndex);
-}
-
-async function resetMultiplayerReadiness() {
-  if (!session?.roomId) {
-    return;
-  }
-
-  try {
-    await supabase.from("players").update({ has_answered_current_question: false }).eq("room_id", session.roomId);
-  } catch (error) {
-    console.warn("Não foi possível limpar o estado de resposta da sala:", error);
   }
 }
 

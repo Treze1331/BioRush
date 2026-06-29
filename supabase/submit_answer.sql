@@ -1,7 +1,149 @@
 drop function if exists public.advance_question_if_ready(uuid, uuid, int);
+drop function if exists public.ensure_question_timer(uuid, uuid);
+drop function if exists public.start_game(uuid, uuid);
 drop function if exists public.submit_answer(uuid, uuid, text, int);
 drop function if exists public.submit_answer(uuid, uuid, text, int, int);
 drop function if exists public.submit_answer(uuid, uuid, text, int, int, boolean);
+
+create or replace function public.start_game(
+  p_room_id uuid,
+  p_client_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_player public.players%rowtype;
+  v_room public.rooms%rowtype;
+begin
+  select *
+    into v_player
+    from public.players
+   where room_id = p_room_id
+     and client_id = p_client_id
+     and is_host = true
+   limit 1;
+
+  if not found then
+    raise exception 'host_not_found';
+  end if;
+
+  select *
+    into v_room
+    from public.rooms
+   where id = p_room_id
+   for update;
+
+  if not found then
+    raise exception 'room_not_found';
+  end if;
+
+  if v_room.status = 'playing' then
+    return jsonb_build_object(
+      'room_id', v_room.id,
+      'current_question_index', v_room.current_question_index,
+      'question_started_at', v_room.question_started_at,
+      'question_time', v_room.question_time,
+      'status', v_room.status,
+      'total_questions', v_room.total_questions
+    );
+  end if;
+
+  if v_room.status <> 'waiting' then
+    raise exception 'room_not_waiting';
+  end if;
+
+  update public.players
+     set has_answered_current_question = false,
+         last_points = 0,
+         score = 0,
+         correct_count = 0,
+         streak = 0
+   where room_id = p_room_id;
+
+  update public.rooms
+     set status = 'playing',
+         current_question_index = 0,
+         question_started_at = now(),
+         question_time = coalesce(v_room.question_time, 30),
+         total_questions = coalesce(v_room.total_questions, 10)
+   where id = p_room_id
+   returning * into v_room;
+
+  return jsonb_build_object(
+    'room_id', v_room.id,
+    'current_question_index', v_room.current_question_index,
+    'question_started_at', v_room.question_started_at,
+    'question_time', v_room.question_time,
+    'status', v_room.status,
+    'total_questions', v_room.total_questions
+  );
+end;
+$$;
+
+create or replace function public.ensure_question_timer(
+  p_room_id uuid,
+  p_client_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_player public.players%rowtype;
+  v_room public.rooms%rowtype;
+begin
+  select *
+    into v_player
+    from public.players
+   where room_id = p_room_id
+     and client_id = p_client_id
+   limit 1;
+
+  if not found then
+    raise exception 'invalid_room_client';
+  end if;
+
+  select *
+    into v_room
+    from public.rooms
+   where id = p_room_id
+   for update;
+
+  if not found then
+    raise exception 'room_not_found';
+  end if;
+
+  if v_room.status <> 'playing' then
+    return jsonb_build_object(
+      'room_id', v_room.id,
+      'current_question_index', v_room.current_question_index,
+      'question_started_at', v_room.question_started_at,
+      'question_time', v_room.question_time,
+      'status', v_room.status
+    );
+  end if;
+
+  if v_room.question_started_at is null or v_room.question_time is null then
+    update public.rooms
+       set question_started_at = coalesce(v_room.question_started_at, now()),
+           question_time = coalesce(v_room.question_time, 30)
+     where id = p_room_id
+     returning * into v_room;
+  end if;
+
+  return jsonb_build_object(
+    'room_id', v_room.id,
+    'current_question_index', v_room.current_question_index,
+    'question_started_at', v_room.question_started_at,
+    'question_time', v_room.question_time,
+    'status', v_room.status
+  );
+end;
+$$;
 
 create or replace function public.submit_answer(
   p_player_id uuid,
@@ -14,6 +156,7 @@ create or replace function public.submit_answer(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   v_player public.players%rowtype;
@@ -147,47 +290,6 @@ begin
 end;
 $$;
 
-create or replace function public.submit_answer(
-  p_player_id uuid,
-  p_client_id uuid,
-  p_answer text,
-  p_time_left int,
-  p_question_index int
-)
-returns jsonb
-language sql
-security definer
-as $$
-  select public.submit_answer(
-    p_player_id,
-    p_client_id,
-    p_answer,
-    p_time_left,
-    p_question_index,
-    false
-  );
-$$;
-
-create or replace function public.submit_answer(
-  p_player_id uuid,
-  p_client_id uuid,
-  p_answer text,
-  p_time_left int
-)
-returns jsonb
-language sql
-security definer
-as $$
-  select public.submit_answer(
-    p_player_id,
-    p_client_id,
-    p_answer,
-    p_time_left,
-    null,
-    false
-  );
-$$;
-
 create or replace function public.advance_question_if_ready(
   p_room_id uuid,
   p_client_id uuid,
@@ -196,6 +298,7 @@ create or replace function public.advance_question_if_ready(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   v_player public.players%rowtype;
@@ -309,3 +412,8 @@ begin
   );
 end;
 $$;
+
+grant execute on function public.start_game(uuid, uuid) to anon, authenticated;
+grant execute on function public.ensure_question_timer(uuid, uuid) to anon, authenticated;
+grant execute on function public.submit_answer(uuid, uuid, text, int, int, boolean) to anon, authenticated;
+grant execute on function public.advance_question_if_ready(uuid, uuid, int) to anon, authenticated;
