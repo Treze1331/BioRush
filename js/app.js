@@ -565,19 +565,47 @@ function shouldAdvanceMultiplayerQuestion(room) {
     return true;
   }
 
+  const roomIndex = Number(room.current_question_index ?? currentIndex);
+  if (roomIndex > currentIndex) {
+    return true;
+  }
+
   const totalPlayers = Array.isArray(currentPlayers) ? currentPlayers.length : 0;
   if (!totalPlayers) {
     return false;
   }
 
   const readyPlayers = countReadyPlayers(currentPlayers);
-  const roomIndex = Number(room.current_question_index ?? currentIndex);
+  return readyPlayers >= totalPlayers;
+}
 
-  if (roomIndex > currentIndex) {
-    return true;
+async function persistMultiplayerProgress(nextIndex) {
+  if (!session?.roomId || gameMode !== "multi" || hasShownMultiplayerResults) {
+    return false;
   }
 
-  return readyPlayers >= totalPlayers;
+  const targetIndex = Math.min(Math.max(0, Number(nextIndex) || 0), TOTAL_QUESTIONS);
+
+  try {
+    const { error } = await supabase
+      .from("rooms")
+      .update({
+        current_question_index: targetIndex,
+        question_started_at: new Date().toISOString(),
+        question_time: getCurrentQuestionTimeLimit(),
+        status: "playing"
+      })
+      .eq("id", session.roomId);
+
+    if (error) {
+      throw error;
+    }
+
+    return true;
+  } catch (error) {
+    console.warn("Não foi possível atualizar a sala para a próxima questão:", error);
+    return false;
+  }
 }
 
 async function finishMultiplayerIfNeeded(room = null) {
@@ -942,7 +970,7 @@ function scheduleMultiplayerAdvance() {
   }, FEEDBACK_DELAY);
 }
 
-function advanceToNextQuestionInMultiplayer() {
+async function advanceToNextQuestionInMultiplayer() {
   if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
     return;
   }
@@ -952,6 +980,8 @@ function advanceToNextQuestionInMultiplayer() {
   }
 
   const remoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
+  const nextIndex = Math.min(currentIndex + 1, TOTAL_QUESTIONS);
+
   if (Number.isFinite(remoteIndex) && remoteIndex > currentIndex) {
     pendingQuestionIndex = remoteIndex;
     tryRenderPendingQuestion();
@@ -962,12 +992,25 @@ function advanceToNextQuestionInMultiplayer() {
     return;
   }
 
-  currentIndex += 1;
-  if (currentIndex < TOTAL_QUESTIONS) {
-    renderQuestion();
-  } else {
-    void showMultiplayerResults();
+  if (nextIndex >= TOTAL_QUESTIONS) {
+    await showMultiplayerResults();
+    return;
   }
+
+  const syncedRoom = await syncMultiplayerRoomState();
+  const syncedRemoteIndex = Number(syncedRoom?.current_question_index ?? currentRoom?.current_question_index ?? currentIndex);
+  if (Number.isFinite(syncedRemoteIndex) && syncedRemoteIndex >= nextIndex) {
+    pendingQuestionIndex = syncedRemoteIndex;
+    tryRenderPendingQuestion();
+    return;
+  }
+
+  if (await persistMultiplayerProgress(nextIndex)) {
+    return;
+  }
+
+  currentIndex = nextIndex;
+  renderQuestion();
 }
 
 function showSoloResults() {
