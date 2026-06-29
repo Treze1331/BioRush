@@ -15,6 +15,7 @@ declare
   v_answered_players integer;
   v_next_question_index integer;
   v_advanced boolean := false;
+  v_all_answered boolean := false;
 begin
   select *
     into v_player
@@ -34,6 +35,10 @@ begin
 
   if not found then
     raise exception 'room_not_found';
+  end if;
+
+  if v_player.client_id <> p_client_id then
+    raise exception 'invalid_player_client';
   end if;
 
   if v_room.status <> 'playing' then
@@ -60,8 +65,11 @@ begin
    where room_id = v_room.id
      and has_answered_current_question = true;
 
-  if v_total_players > 0 and v_answered_players >= v_total_players then
+  v_all_answered := v_total_players > 0 and v_answered_players >= v_total_players;
+
+  if v_all_answered then
     v_next_question_index := v_room.current_question_index + 1;
+    v_advanced := true;
 
     if v_next_question_index >= v_room.total_questions then
       update public.rooms
@@ -91,8 +99,8 @@ begin
     'room_id', v_room.id,
     'current_question_index', v_room.current_question_index,
     'status', v_room.status,
-    'advanced', v_room.current_question_index > v_room.current_question_index,
-    'all_answered', v_total_players > 0 and v_answered_players >= v_total_players,
+    'advanced', v_advanced,
+    'all_answered', v_all_answered,
     'answered_players', v_answered_players,
     'total_players', v_total_players
   );

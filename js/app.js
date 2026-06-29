@@ -274,7 +274,7 @@ function subscribeToRoom(roomId) {
       currentRoom = payload.new;
       if (!currentRoom) return;
 
-      const isRoomFinished = currentRoom.status === "finished" || currentRoom.current_question_index >= currentRoom.total_questions;
+      const roomHasFinished = isRoomFinished(currentRoom);
 
       // Se o Host iniciou o jogo enquanto estávamos no Lobby
       if (currentRoom.status === "playing" && screens.lobby.classList.contains("screen-active") && gameMode !== "multi") {
@@ -283,19 +283,14 @@ function subscribeToRoom(roomId) {
 
       // Se estamos jogando e o banco atualizou a pergunta
       if (currentRoom.status === "playing" && screens.game.classList.contains("screen-active")) {
-        const remoteIndex = Number(currentRoom.current_question_index);
-        
+        await handleRoomQuestionChange(currentRoom);
+
         // Verifica se a pergunta avançou
-        if (remoteIndex !== currentIndex && remoteIndex < TOTAL_QUESTIONS) {
-          currentIndex = remoteIndex;
-          pendingQuestionIndex = null;
-          isLocked = false;
-          renderQuestion();
-        }
+
       }
 
       // Se o jogo acabou
-      if (isRoomFinished && screens.game.classList.contains("screen-active") && !hasShownMultiplayerResults) {
+      if (roomHasFinished && screens.game.classList.contains("screen-active") && !hasShownMultiplayerResults) {
         await showMultiplayerResults();
       }
     }
@@ -481,14 +476,16 @@ async function beginMultiplayerGame() {
   currentRoom = await fetchRoom(session.roomId);
   currentPlayers = await fetchPlayers(session.roomId);
 
-  await resetMultiplayerReadiness();
-  await supabase
-    .from("rooms")
-    .update({
-      question_started_at: new Date().toISOString(),
-      question_time: Number(currentRoom?.question_time ?? QUESTION_TIME)
-    })
-    .eq("id", session.roomId);
+  if (!currentRoom?.question_started_at && session.isHost) {
+    await supabase
+      .from("rooms")
+      .update({
+        question_started_at: new Date().toISOString(),
+        question_time: Number(currentRoom?.question_time ?? QUESTION_TIME)
+      })
+      .eq("id", session.roomId);
+    currentRoom = await fetchRoom(session.roomId);
+  }
 
   const questionIndices = Array.isArray(currentRoom?.question_indices) && currentRoom.question_indices.length
     ? currentRoom.question_indices
@@ -561,6 +558,15 @@ async function resetMultiplayerReadiness() {
   }
 }
 
+async function syncMultiplayerRoomState() {
+  if (!session?.roomId) {
+    return null;
+  }
+
+  currentRoom = await fetchRoom(session.roomId);
+  return currentRoom;
+}
+
 async function finishMultiplayerIfNeeded(room = null) {
   if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
     return false;
@@ -597,7 +603,25 @@ async function handleRoomQuestionChange(room) {
     pendingQuestionIndex = null;
     isLocked = false;
     renderQuestion();
+    return;
   }
+
+  syncTimerFromRoom(room);
+}
+
+function syncTimerFromRoom(room) {
+  if (!room?.question_started_at || gameMode !== "multi") {
+    return;
+  }
+
+  const startedAt = new Date(room.question_started_at).getTime();
+  if (Number.isNaN(startedAt)) {
+    return;
+  }
+
+  questionStartedAt = startedAt;
+  timeLeft = getSyncedTimeLeft(room);
+  updateTimer();
 }
 
 function startSoloGame() {
@@ -670,7 +694,7 @@ function renderQuestion() {
   lastTickSecond = null;
   timeLeft = useRoomTime ? getSyncedTimeLeft(currentRoom) : questionTimeLimit;
 
-  if (timeLeft <= 0) {
+  if (timeLeft <= 0 && gameMode !== "multi") {
     timeLeft = questionTimeLimit;
     questionStartedAt = Date.now();
   }
@@ -704,7 +728,6 @@ async function handleAnswer(selectedButton, correctAnswer) {
   }
 
   isLocked = true;
-  stopTimer();
   const selectedAnswer = selectedButton.dataset.answer;
   const isCorrect = selectedAnswer === correctAnswer;
   feedbackUntil = Date.now() + FEEDBACK_DELAY;
@@ -724,59 +747,35 @@ async function handleAnswer(selectedButton, correctAnswer) {
       if (error) throw error;
 
       // Pinta a tela com a resposta correta imediatamente para dar feedback ao jogador atual
-      if (data?.is_correct) {
+      if (data?.is_correct ?? isCorrect) {
         selectedButton.classList.add("correct");
         playCorrectSound();
       } else {
         selectedButton.classList.add("wrong");
         playWrongSound();
       }
-      
+
       revealAnswer(data?.correct_answer || correctAnswer, selectedButton);
-      
+
       // Atualiza o Placar localmente (o subscribePlayers já fará isso também)
       currentPlayers = await fetchPlayers(session.roomId);
+      const self = currentPlayers.find((player) => player.id === session.playerId);
+      score = self?.score || score;
+      correctCount = self?.correct_count || correctCount;
       renderLeaderboard(currentPlayers);
-      
+
+      const roomState = await syncMultiplayerRoomState();
+      if (roomState) {
+        await handleRoomQuestionChange(roomState);
+      }
+
     } catch (error) {
       console.error("Falha ao enviar resposta no multiplayer:", error);
     }
     return;
-
-    if (submissionData?.is_correct) {
-      selectedButton.classList.add("correct");
-      playCorrectSound();
-    } else {
-      selectedButton.classList.add("wrong");
-      playWrongSound();
-    }
-
-    revealAnswer(submissionData?.correct_answer || correctAnswer, selectedButton);
-
-    try {
-      currentPlayers = await fetchPlayers(session.roomId);
-      const self = currentPlayers.find((player) => player.id === session.playerId);
-      score = self?.score || 0;
-      correctCount = self?.correct_count || 0;
-      renderLeaderboard(currentPlayers);
-    } catch (error) {
-      console.warn("Não foi possível atualizar o ranking após a resposta:", error);
-    }
-
-    try {
-      currentPlayers = await fetchPlayers(session.roomId);
-      renderLeaderboard(currentPlayers);
-      const roomState = await syncMultiplayerRoomState();
-      if (roomState) {
-        currentRoom = roomState;
-        await handleRoomQuestionChange(roomState);
-      }
-    } catch (error) {
-      console.warn("Não foi possível sincronizar a sala após a resposta:", error);
-    }
-
-    return;
   }
+
+  stopTimer();
 
   if (isCorrect) {
     score += 1;
