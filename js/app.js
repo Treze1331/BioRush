@@ -84,6 +84,7 @@ let gameMode = "solo";
 let hasShownMultiplayerResults = false;
 let feedbackTimeoutId = null;
 let waitingForMultiplayerAdvance = false;
+let multiplayerAdvancePending = false;
 
 function getOrCreateClientId() {
   let stored = localStorage.getItem(CLIENT_ID_KEY);
@@ -132,11 +133,16 @@ function shuffleArray(array) {
   return copy;
 }
 
-function cleanupSubscriptions() {
+function clearMultiplayerAdvanceTimer() {
   if (feedbackTimeoutId !== null) {
     window.clearTimeout(feedbackTimeoutId);
     feedbackTimeoutId = null;
   }
+  multiplayerAdvancePending = false;
+}
+
+function cleanupSubscriptions() {
+  clearMultiplayerAdvanceTimer();
 
   if (roomChannel) {
     supabase.removeChannel(roomChannel);
@@ -461,6 +467,8 @@ async function startMultiplayerFromLobby() {
 async function beginMultiplayerGame() {
   gameMode = "multi";
   hasShownMultiplayerResults = false;
+  waitingForMultiplayerAdvance = false;
+  multiplayerAdvancePending = false;
   initAudio();
   startMusic();
   playStartSound();
@@ -616,6 +624,8 @@ function tryRenderPendingQuestion() {
 function startSoloGame() {
   gameMode = "solo";
   hasShownMultiplayerResults = false;
+  waitingForMultiplayerAdvance = false;
+  multiplayerAdvancePending = false;
   cleanupSubscriptions();
   session = null;
   initAudio();
@@ -641,6 +651,17 @@ function startSoloGame() {
   renderQuestion();
 }
 
+function getCurrentQuestionTimeLimit() {
+  if (gameMode === "multi" && currentRoom?.question_time != null) {
+    const roomTime = Number(currentRoom.question_time);
+    if (Number.isFinite(roomTime) && roomTime > 0) {
+      return roomTime;
+    }
+  }
+
+  return QUESTION_TIME;
+}
+
 function renderQuestion() {
   if (!currentQuestions.length || currentIndex >= currentQuestions.length) {
     if (gameMode === "multi") {
@@ -650,6 +671,8 @@ function renderQuestion() {
     }
     return;
   }
+
+  clearMultiplayerAdvanceTimer();
 
   const currentQuestion = currentQuestions[currentIndex];
   const progressPercentage = (currentIndex / TOTAL_QUESTIONS) * 100;
@@ -663,16 +686,17 @@ function renderQuestion() {
   waitingForMultiplayerAdvance = false;
 
   const useRoomTime = gameMode === "multi" && currentRoom?.question_started_at && currentRoom?.question_time != null;
+  const questionTimeLimit = getCurrentQuestionTimeLimit();
   questionStartedAt = useRoomTime ? new Date(currentRoom.question_started_at).getTime() : Date.now();
   lastTickSecond = null;
-  timeLeft = useRoomTime ? getSyncedTimeLeft(currentRoom) : QUESTION_TIME;
+  timeLeft = useRoomTime ? getSyncedTimeLeft(currentRoom) : questionTimeLimit;
 
   if (timeLeft <= 0) {
-    timeLeft = QUESTION_TIME;
+    timeLeft = questionTimeLimit;
     questionStartedAt = Date.now();
   }
 
-  startTimer();
+  startTimer(questionTimeLimit);
 
   currentQuestion.options.forEach((option, index) => {
     const button = document.createElement("button");
@@ -770,9 +794,7 @@ async function handleAnswer(selectedButton, correctAnswer) {
       console.warn("Não foi possível atualizar o ranking após a resposta:", error);
     }
 
-    feedbackTimeoutId = window.setTimeout(() => {
-      advanceToNextQuestionInMultiplayer();
-    }, FEEDBACK_DELAY);
+    scheduleMultiplayerAdvance();
     return;
   }
 
@@ -824,9 +846,7 @@ async function handleTimeout() {
       console.warn("Não foi possível atualizar o ranking após o timeout:", error);
     }
 
-    feedbackTimeoutId = window.setTimeout(() => {
-      advanceToNextQuestionInMultiplayer();
-    }, FEEDBACK_DELAY);
+    scheduleMultiplayerAdvance();
     return;
   }
 
@@ -860,8 +880,26 @@ function scheduleNextQuestion() {
   }, FEEDBACK_DELAY);
 }
 
+function scheduleMultiplayerAdvance() {
+  if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
+    return;
+  }
+
+  clearMultiplayerAdvanceTimer();
+  multiplayerAdvancePending = true;
+  feedbackTimeoutId = window.setTimeout(() => {
+    feedbackTimeoutId = null;
+    multiplayerAdvancePending = false;
+    advanceToNextQuestionInMultiplayer();
+  }, FEEDBACK_DELAY);
+}
+
 function advanceToNextQuestionInMultiplayer() {
   if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
+    return;
+  }
+
+  if (waitingForMultiplayerAdvance && Date.now() < feedbackUntil) {
     return;
   }
 
@@ -963,12 +1001,12 @@ async function showMultiplayerResults() {
   }
 }
 
-function startTimer() {
+function startTimer(timeLimit = getCurrentQuestionTimeLimit()) {
   updateTimer();
 
   timerId = window.setInterval(() => {
     const elapsed = Math.floor((Date.now() - questionStartedAt) / 1000);
-    timeLeft = Math.max(0, QUESTION_TIME - elapsed);
+    timeLeft = Math.max(0, timeLimit - elapsed);
 
     updateTimer();
 
