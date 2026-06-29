@@ -60,6 +60,7 @@ const backToMenuButton = document.querySelector("#back-to-menu-button");
 
 const CLIENT_ID_KEY = "quiz-client-id";
 const NICKNAME_KEY = "quiz-nickname";
+const SERVER_CLOCK_RESYNC_INTERVAL = 15000;
 
 let clientId = getOrCreateClientId();
 let session = null;
@@ -85,6 +86,8 @@ let hasShownMultiplayerResults = false;
 let feedbackTimeoutId = null;
 let waitingForMultiplayerAdvance = false;
 let multiplayerAdvancePending = false;
+let serverClockOffset = 0;
+let serverClockSyncedAt = 0;
 
 function getOrCreateClientId() {
   let stored = localStorage.getItem(CLIENT_ID_KEY);
@@ -178,6 +181,86 @@ async function fetchRoom(roomId) {
     throw error;
   }
   return data;
+}
+
+function getSyncedNow() {
+  return Date.now() + serverClockOffset;
+}
+
+function getTimerNow() {
+  return gameMode === "multi" ? getSyncedNow() : Date.now();
+}
+
+async function syncServerClock(force = false) {
+  const localNow = Date.now();
+  if (!force && localNow - serverClockSyncedAt < SERVER_CLOCK_RESYNC_INTERVAL) {
+    return;
+  }
+
+  const requestStartedAt = Date.now();
+
+  try {
+    const { data, error } = await supabase.rpc("get_server_time");
+    if (error) throw error;
+
+    const serverTimeValue = typeof data === "string" ? data : data?.server_time;
+    const serverTime = new Date(serverTimeValue).getTime();
+    if (!Number.isNaN(serverTime)) {
+      const requestEndedAt = Date.now();
+      const latency = requestEndedAt - requestStartedAt;
+      serverClockOffset = serverTime + latency / 2 - requestEndedAt;
+      serverClockSyncedAt = requestEndedAt;
+      return;
+    }
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel sincronizar o relÃ³gio por RPC:", error);
+  }
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/`, {
+      method: "HEAD",
+      headers: { apikey: SUPABASE_ANON_KEY },
+      cache: "no-store"
+    });
+    const dateHeader = response.headers.get("date");
+    const serverTime = dateHeader ? new Date(dateHeader).getTime() : Number.NaN;
+    if (!Number.isNaN(serverTime)) {
+      const requestEndedAt = Date.now();
+      const latency = requestEndedAt - requestStartedAt;
+      serverClockOffset = serverTime + latency / 2 - requestEndedAt;
+      serverClockSyncedAt = requestEndedAt;
+    }
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel sincronizar o relÃ³gio por HTTP:", error);
+  }
+}
+
+async function submitMultiplayerAnswer(answer, answerTimeLeft) {
+  const payload = {
+    p_player_id: session.playerId,
+    p_client_id: clientId,
+    p_answer: answer,
+    p_time_left: answerTimeLeft,
+    p_question_index: currentIndex
+  };
+
+  const response = await supabase.rpc("submit_answer", payload);
+  if (!response.error) {
+    return response;
+  }
+
+  const message = response.error.message || "";
+  const isOldFunctionSignature =
+    message.includes("p_question_index") ||
+    message.includes("schema cache") ||
+    message.includes("Could not find the function");
+
+  if (!isOldFunctionSignature) {
+    return response;
+  }
+
+  const { p_question_index, ...legacyPayload } = payload;
+  return supabase.rpc("submit_answer", legacyPayload);
 }
 
 function renderLeaderboard(players) {
@@ -454,6 +537,12 @@ async function startMultiplayerFromLobby() {
 
   showError(lobbyError, "");
 
+  try {
+    await supabase.from("players").update({ has_answered_current_question: false }).eq("room_id", session.roomId);
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel limpar respostas antes de iniciar:", error);
+  }
+
   const { error } = await supabase.rpc("start_game", {
     p_room_id: session.roomId,
     p_client_id: clientId
@@ -473,6 +562,7 @@ async function beginMultiplayerGame() {
   startMusic();
   playStartSound();
   stopTimer();
+  await syncServerClock(true);
   currentRoom = await fetchRoom(session.roomId);
   currentPlayers = await fetchPlayers(session.roomId);
 
@@ -523,7 +613,7 @@ function getSyncedTimeLeft(room) {
     return QUESTION_TIME;
   }
 
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+  const elapsed = Math.floor((getSyncedNow() - startedAt) / 1000);
   const questionTime = Number(room.question_time) || QUESTION_TIME;
   return Math.max(0, questionTime - elapsed);
 }
@@ -589,12 +679,18 @@ async function handleRoomQuestionChange(room) {
     return;
   }
 
+  await syncServerClock();
+
   if (await finishMultiplayerIfNeeded(room)) {
     return;
   }
 
   const remoteIndex = Number(room.current_question_index ?? currentIndex);
   if (!Number.isFinite(remoteIndex)) {
+    return;
+  }
+
+  if (remoteIndex < currentIndex) {
     return;
   }
 
@@ -690,13 +786,13 @@ function renderQuestion() {
 
   const useRoomTime = gameMode === "multi" && currentRoom?.question_started_at && currentRoom?.question_time != null;
   const questionTimeLimit = getCurrentQuestionTimeLimit();
-  questionStartedAt = useRoomTime ? new Date(currentRoom.question_started_at).getTime() : Date.now();
+  questionStartedAt = useRoomTime ? new Date(currentRoom.question_started_at).getTime() : getTimerNow();
   lastTickSecond = null;
   timeLeft = useRoomTime ? getSyncedTimeLeft(currentRoom) : questionTimeLimit;
 
   if (timeLeft <= 0 && gameMode !== "multi") {
     timeLeft = questionTimeLimit;
-    questionStartedAt = Date.now();
+    questionStartedAt = getTimerNow();
   }
 
   startTimer(questionTimeLimit);
@@ -737,14 +833,17 @@ async function handleAnswer(selectedButton, correctAnswer) {
 
     try {
       // Envia a resposta para o Supabase
-      const { data, error } = await supabase.rpc("submit_answer", {
-        p_player_id: session.playerId,
-        p_client_id: clientId,
-        p_answer: selectedAnswer,
-        p_time_left: timeLeft
-      });
+      const { data, error } = await submitMultiplayerAnswer(selectedAnswer, timeLeft);
 
       if (error) throw error;
+
+      if (data?.stale_answer) {
+        const roomState = await syncMultiplayerRoomState();
+        if (roomState) {
+          await handleRoomQuestionChange(roomState);
+        }
+        return;
+      }
 
       // Pinta a tela com a resposta correta imediatamente para dar feedback ao jogador atual
       if (data?.is_correct ?? isCorrect) {
@@ -806,12 +905,7 @@ async function handleTimeout() {
     waitingForMultiplayerAdvance = true;
 
     try {
-      await supabase.rpc("submit_answer", {
-        p_player_id: session.playerId,
-        p_client_id: clientId,
-        p_answer: "",
-        p_time_left: 0
-      });
+      await submitMultiplayerAnswer("", 0);
     } catch (error) {
       console.warn("Falha ao registrar timeout no multiplayer, usando fallback local:", error);
     }
@@ -957,7 +1051,7 @@ function startTimer(timeLimit = getCurrentQuestionTimeLimit()) {
   updateTimer();
 
   timerId = window.setInterval(() => {
-    const elapsed = Math.floor((Date.now() - questionStartedAt) / 1000);
+    const elapsed = Math.floor((getTimerNow() - questionStartedAt) / 1000);
     timeLeft = Math.max(0, timeLimit - elapsed);
 
     updateTimer();

@@ -2,7 +2,8 @@ create or replace function public.submit_answer(
   p_player_id uuid,
   p_client_id uuid,
   p_answer text,
-  p_time_left int
+  p_time_left int,
+  p_question_index int default null
 )
 returns jsonb
 language plpgsql
@@ -49,6 +50,19 @@ begin
       'all_answered', false,
       'answered_players', 0,
       'total_players', 0
+    );
+  end if;
+
+  if p_question_index is not null and p_question_index <> v_room.current_question_index then
+    return jsonb_build_object(
+      'room_id', v_room.id,
+      'current_question_index', v_room.current_question_index,
+      'status', v_room.status,
+      'advanced', false,
+      'all_answered', false,
+      'answered_players', 0,
+      'total_players', 0,
+      'stale_answer', true
     );
   end if;
 
@@ -105,4 +119,23 @@ begin
     'total_players', v_total_players
   );
 end;
+$$;
+
+create or replace function public.submit_answer(
+  p_player_id uuid,
+  p_client_id uuid,
+  p_answer text,
+  p_time_left int
+)
+returns jsonb
+language sql
+security definer
+as $$
+  select public.submit_answer(
+    p_player_id,
+    p_client_id,
+    p_answer,
+    p_time_left,
+    null
+  );
 $$;
