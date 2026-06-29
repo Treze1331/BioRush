@@ -78,7 +78,6 @@ let questionStartedAt = 0;
 let lastTickSecond = null;
 let timerId = null;
 let feedbackUntil = 0;
-let pendingQuestionIndex = null;
 let currentRoom = null;
 let currentPlayers = [];
 let gameMode = "solo";
@@ -88,8 +87,7 @@ let waitingForMultiplayerAdvance = false;
 let multiplayerAdvancePending = false;
 let serverClockOffset = 0;
 let serverClockSyncedAt = 0;
-let hostAnsweredPlayers = new Set();
-let hostAdvancePending = false;
+let roomSyncInFlight = false;
 
 function getOrCreateClientId() {
   let stored = localStorage.getItem(CLIENT_ID_KEY);
@@ -161,6 +159,7 @@ function cleanupSubscriptions() {
     window.clearInterval(advanceIntervalId);
     advanceIntervalId = null;
   }
+  roomSyncInFlight = false;
 }
 
 async function fetchPlayers(roomId) {
@@ -237,13 +236,22 @@ async function syncServerClock(force = false) {
   }
 }
 
-async function submitMultiplayerAnswer(answer, answerTimeLeft) {
+function getCurrentAnswerTimeLeft() {
+  if (gameMode === "multi" && currentRoom?.question_started_at) {
+    return getSyncedTimeLeft(currentRoom);
+  }
+
+  return timeLeft;
+}
+
+async function submitMultiplayerAnswer(answer, isCorrect) {
   const payload = {
     p_player_id: session.playerId,
     p_client_id: clientId,
     p_answer: answer,
-    p_time_left: answerTimeLeft,
-    p_question_index: currentIndex
+    p_time_left: getCurrentAnswerTimeLeft(),
+    p_question_index: currentIndex,
+    p_is_correct: isCorrect
   };
 
   const response = await supabase.rpc("submit_answer", payload);
@@ -253,6 +261,7 @@ async function submitMultiplayerAnswer(answer, answerTimeLeft) {
 
   const message = response.error.message || "";
   const isOldFunctionSignature =
+    message.includes("p_is_correct") ||
     message.includes("p_question_index") ||
     message.includes("schema cache") ||
     message.includes("Could not find the function");
@@ -261,7 +270,23 @@ async function submitMultiplayerAnswer(answer, answerTimeLeft) {
     return response;
   }
 
-  const { p_question_index, ...legacyPayload } = payload;
+  const { p_is_correct, ...payloadWithoutCorrectness } = payload;
+  const responseWithoutCorrectness = await supabase.rpc("submit_answer", payloadWithoutCorrectness);
+  if (!responseWithoutCorrectness.error) {
+    return responseWithoutCorrectness;
+  }
+
+  const legacyMessage = responseWithoutCorrectness.error.message || "";
+  const isLegacyWithoutQuestionIndex =
+    legacyMessage.includes("p_question_index") ||
+    legacyMessage.includes("schema cache") ||
+    legacyMessage.includes("Could not find the function");
+
+  if (!isLegacyWithoutQuestionIndex) {
+    return responseWithoutCorrectness;
+  }
+
+  const { p_question_index, ...legacyPayload } = payloadWithoutCorrectness;
   return supabase.rpc("submit_answer", legacyPayload);
 }
 
@@ -351,7 +376,7 @@ function subscribeToRoom(roomId) {
   cleanupSubscriptions();
 
   roomChannel = supabase
-  .channel(`room:${roomId}`, { config: { broadcast: { self: true } } })
+  .channel(`room:${roomId}`)
   .on(
     "postgres_changes",
     { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
@@ -380,12 +405,6 @@ function subscribeToRoom(roomId) {
       }
     }
   )
-  .on("broadcast", { event: "player_answer" }, ({ payload }) => {
-    void handleMultiplayerAnswerBroadcast(payload);
-  })
-  .on("broadcast", { event: "game_state" }, ({ payload }) => {
-    void handleMultiplayerStateBroadcast(payload);
-  })
   .subscribe();
 
   playersChannel = supabase
@@ -394,6 +413,10 @@ function subscribeToRoom(roomId) {
       "postgres_changes",
       { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomId}` },
       async () => {
+        if (!session?.roomId) {
+          return;
+        }
+
         currentPlayers = await fetchPlayers(roomId);
         const self = currentPlayers.find((player) => player.id === session.playerId);
         if (self) {
@@ -401,6 +424,7 @@ function subscribeToRoom(roomId) {
         }
         renderLobby();
         renderLeaderboard(currentPlayers);
+        maybeScheduleMultiplayerAdvance();
       }
     )
     .subscribe();
@@ -566,8 +590,6 @@ async function beginMultiplayerGame() {
   hasShownMultiplayerResults = false;
   waitingForMultiplayerAdvance = false;
   multiplayerAdvancePending = false;
-  hostAnsweredPlayers = new Set();
-  hostAdvancePending = false;
   initAudio();
   startMusic();
   playStartSound();
@@ -580,7 +602,7 @@ async function beginMultiplayerGame() {
     await supabase
       .from("rooms")
       .update({
-        question_started_at: new Date().toISOString(),
+        question_started_at: getQuestionStartedAtIso(),
         question_time: Number(currentRoom?.question_time ?? QUESTION_TIME)
       })
       .eq("id", session.roomId);
@@ -604,17 +626,13 @@ async function beginMultiplayerGame() {
   score = 0;
   correctCount = 0;
   isLocked = false;
-  pendingQuestionIndex = null;
   feedbackUntil = 0;
   resultPodium.hidden = true;
   percentageRing.parentElement.hidden = false;
   showScreen("game");
   renderLeaderboard(currentPlayers);
   renderQuestion();
-
-  if (session.isHost) {
-    await broadcastMultiplayerState("playing");
-  }
+  startMultiplayerSyncLoop();
 }
 
 function getSyncedTimeLeft(room) {
@@ -627,9 +645,9 @@ function getSyncedTimeLeft(room) {
     return QUESTION_TIME;
   }
 
-  const elapsed = Math.floor((getSyncedNow() - startedAt) / 1000);
   const questionTime = Number(room.question_time) || QUESTION_TIME;
-  return Math.max(0, questionTime - elapsed);
+  const remainingMs = startedAt + questionTime * 1000 - getSyncedNow();
+  return Math.max(0, Math.ceil(remainingMs / 1000));
 }
 
 function isRoomFinished(room) {
@@ -648,6 +666,159 @@ function countReadyPlayers(players = currentPlayers) {
   }
 
   return players.filter((player) => Boolean(player?.has_answered_current_question)).length;
+}
+
+function haveAllPlayersAnswered(players = currentPlayers) {
+  return Array.isArray(players) && players.length > 0 && countReadyPlayers(players) >= players.length;
+}
+
+function startMultiplayerSyncLoop() {
+  if (advanceIntervalId !== null) {
+    return;
+  }
+
+  advanceIntervalId = window.setInterval(() => {
+    void syncMultiplayerStateFromServer();
+  }, 1000);
+}
+
+async function syncMultiplayerStateFromServer() {
+  if (!session?.roomId || gameMode !== "multi" || hasShownMultiplayerResults || roomSyncInFlight) {
+    return;
+  }
+
+  roomSyncInFlight = true;
+
+  try {
+    const [room, players] = await Promise.all([fetchRoom(session.roomId), fetchPlayers(session.roomId)]);
+    currentRoom = room;
+    currentPlayers = players;
+
+    const self = currentPlayers.find((player) => player.id === session.playerId);
+    if (self) {
+      session.isHost = self.is_host;
+      score = self.score || score;
+      correctCount = self.correct_count || correctCount;
+    }
+
+    renderLeaderboard(currentPlayers);
+
+    if (currentRoom.status === "playing") {
+      await handleRoomQuestionChange(currentRoom);
+      maybeScheduleMultiplayerAdvance();
+    } else if (isRoomFinished(currentRoom)) {
+      await showMultiplayerResults();
+    }
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel sincronizar a sala multiplayer:", error);
+  } finally {
+    roomSyncInFlight = false;
+  }
+}
+
+function maybeScheduleMultiplayerAdvance() {
+  if (
+    gameMode !== "multi" ||
+    !session?.roomId ||
+    multiplayerAdvancePending ||
+    hasShownMultiplayerResults ||
+    !haveAllPlayersAnswered()
+  ) {
+    return;
+  }
+
+  const questionIndex = currentIndex;
+  multiplayerAdvancePending = true;
+
+  feedbackTimeoutId = window.setTimeout(() => {
+    feedbackTimeoutId = null;
+    void requestMultiplayerAdvance(questionIndex);
+  }, FEEDBACK_DELAY);
+}
+
+function isMissingAdvanceFunction(error) {
+  const message = error?.message || "";
+  return (
+    message.includes("advance_question_if_ready") ||
+    message.includes("schema cache") ||
+    message.includes("Could not find the function")
+  );
+}
+
+async function requestMultiplayerAdvance(questionIndex) {
+  if (!session?.roomId || gameMode !== "multi" || currentIndex !== questionIndex) {
+    multiplayerAdvancePending = false;
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("advance_question_if_ready", {
+      p_room_id: session.roomId,
+      p_client_id: clientId,
+      p_question_index: questionIndex
+    });
+
+    if (error) {
+      if (isMissingAdvanceFunction(error)) {
+        await fallbackAdvanceMultiplayerQuestion(questionIndex);
+      } else {
+        throw error;
+      }
+    } else if (data?.status === "finished") {
+      currentRoom = {
+        ...(currentRoom || {}),
+        status: "finished",
+        current_question_index: TOTAL_QUESTIONS
+      };
+      await showMultiplayerResults();
+      return;
+    }
+
+    const roomState = await syncMultiplayerRoomState();
+    if (roomState) {
+      await handleRoomQuestionChange(roomState);
+    }
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel avanÃ§ar a pergunta multiplayer:", error);
+  } finally {
+    multiplayerAdvancePending = false;
+  }
+}
+
+async function fallbackAdvanceMultiplayerQuestion(questionIndex) {
+  if (!session?.isHost || !haveAllPlayersAnswered() || currentIndex !== questionIndex) {
+    return;
+  }
+
+  const nextIndex = questionIndex + 1;
+
+  if (nextIndex >= TOTAL_QUESTIONS) {
+    await supabase
+      .from("rooms")
+      .update({
+        status: "finished",
+        current_question_index: TOTAL_QUESTIONS
+      })
+      .eq("id", session.roomId)
+      .eq("current_question_index", questionIndex);
+    return;
+  }
+
+  await supabase
+    .from("players")
+    .update({ has_answered_current_question: false })
+    .eq("room_id", session.roomId);
+
+  await supabase
+    .from("rooms")
+    .update({
+      current_question_index: nextIndex,
+      question_started_at: getQuestionStartedAtIso(),
+      question_time: getCurrentQuestionTimeLimit(),
+      status: "playing"
+    })
+    .eq("id", session.roomId)
+    .eq("current_question_index", questionIndex);
 }
 
 async function resetMultiplayerReadiness() {
@@ -675,183 +846,6 @@ function getQuestionStartedAtIso() {
   return new Date(getSyncedNow()).toISOString();
 }
 
-function getMultiplayerStatePayload(status = currentRoom?.status || "playing") {
-  return {
-    status,
-    questionIndex: currentIndex,
-    questionStartedAt: currentRoom?.question_started_at || getQuestionStartedAtIso(),
-    questionTime: getCurrentQuestionTimeLimit(),
-    players: currentPlayers.map((player) => ({ ...player })),
-    answeredPlayerIds: [...hostAnsweredPlayers]
-  };
-}
-
-async function broadcastMultiplayerState(status = currentRoom?.status || "playing") {
-  if (!roomChannel || !session?.isHost) {
-    return;
-  }
-
-  await roomChannel.send({
-    type: "broadcast",
-    event: "game_state",
-    payload: getMultiplayerStatePayload(status)
-  });
-}
-
-async function handleMultiplayerStateBroadcast(payload) {
-  if (!payload || gameMode !== "multi") {
-    return;
-  }
-
-  if (Array.isArray(payload.players)) {
-    currentPlayers = payload.players;
-    renderLeaderboard(currentPlayers);
-  }
-
-  currentRoom = {
-    ...(currentRoom || {}),
-    status: payload.status || "playing",
-    current_question_index: Number(payload.questionIndex ?? currentIndex),
-    question_started_at: payload.questionStartedAt || currentRoom?.question_started_at,
-    question_time: Number(payload.questionTime || currentRoom?.question_time || QUESTION_TIME),
-    total_questions: TOTAL_QUESTIONS
-  };
-
-  if (payload.status === "finished") {
-    await showMultiplayerResults();
-    return;
-  }
-
-  await handleRoomQuestionChange(currentRoom);
-}
-
-function updateHostPlayerScore(answerPayload) {
-  const playerIndex = currentPlayers.findIndex((player) => player.id === answerPayload.playerId);
-  if (playerIndex < 0) {
-    return;
-  }
-
-  const player = { ...currentPlayers[playerIndex] };
-  const question = currentQuestions[answerPayload.questionIndex];
-  const isCorrect = Boolean(question && answerPayload.answer === question.answer);
-  const timeBonus = Math.max(0, Number(answerPayload.timeLeft || 0));
-  const earnedPoints = isCorrect ? 100 + timeBonus * 5 : 0;
-
-  player.has_answered_current_question = true;
-  player.last_points = earnedPoints;
-  player.score = Number(player.score || 0) + earnedPoints;
-  player.correct_count = Number(player.correct_count || 0) + (isCorrect ? 1 : 0);
-  player.streak = isCorrect ? Number(player.streak || 0) + 1 : 0;
-
-  currentPlayers.splice(playerIndex, 1, player);
-}
-
-async function handleMultiplayerAnswerBroadcast(payload) {
-  if (!payload || gameMode !== "multi" || !session?.isHost || hostAdvancePending) {
-    return;
-  }
-
-  if (Number(payload.questionIndex) !== currentIndex || hostAnsweredPlayers.has(payload.playerId)) {
-    return;
-  }
-
-  hostAnsweredPlayers.add(payload.playerId);
-  updateHostPlayerScore(payload);
-  renderLeaderboard(currentPlayers);
-  await broadcastMultiplayerState("playing");
-
-  if (hostAnsweredPlayers.size >= currentPlayers.length) {
-    scheduleHostQuestionAdvance();
-  }
-}
-
-function markMissingPlayersAsTimedOut() {
-  if (!session?.isHost || hostAdvancePending || gameMode !== "multi") {
-    return;
-  }
-
-  currentPlayers.forEach((player) => {
-    if (hostAnsweredPlayers.has(player.id)) {
-      return;
-    }
-
-    hostAnsweredPlayers.add(player.id);
-    updateHostPlayerScore({
-      playerId: player.id,
-      questionIndex: currentIndex,
-      answer: "",
-      timeLeft: 0
-    });
-  });
-
-  void broadcastMultiplayerState("playing");
-  scheduleHostQuestionAdvance();
-}
-
-function scheduleHostQuestionAdvance() {
-  if (!session?.isHost || hostAdvancePending) {
-    return;
-  }
-
-  hostAdvancePending = true;
-  window.setTimeout(() => {
-    void advanceHostQuestion();
-  }, FEEDBACK_DELAY);
-}
-
-async function advanceHostQuestion() {
-  if (!session?.isHost || gameMode !== "multi") {
-    return;
-  }
-
-  hostAdvancePending = false;
-  hostAnsweredPlayers = new Set();
-  currentPlayers = currentPlayers.map((player) => ({
-    ...player,
-    has_answered_current_question: false
-  }));
-
-  const nextIndex = currentIndex + 1;
-  if (nextIndex >= TOTAL_QUESTIONS) {
-    currentIndex = TOTAL_QUESTIONS;
-    currentRoom = {
-      ...(currentRoom || {}),
-      status: "finished",
-      current_question_index: TOTAL_QUESTIONS
-    };
-    await broadcastMultiplayerState("finished");
-    await showMultiplayerResults();
-    return;
-  }
-
-  currentIndex = nextIndex;
-  currentRoom = {
-    ...(currentRoom || {}),
-    status: "playing",
-    current_question_index: currentIndex,
-    question_started_at: getQuestionStartedAtIso(),
-    question_time: getCurrentQuestionTimeLimit(),
-    total_questions: TOTAL_QUESTIONS
-  };
-
-  try {
-    await supabase
-      .from("rooms")
-      .update({
-        current_question_index: currentIndex,
-        question_started_at: currentRoom.question_started_at,
-        question_time: currentRoom.question_time,
-        status: "playing"
-      })
-      .eq("id", session.roomId);
-  } catch (error) {
-    console.warn("NÃ£o foi possÃ­vel persistir o avanÃ§o da pergunta:", error);
-  }
-
-  await broadcastMultiplayerState("playing");
-  renderQuestion();
-}
-
 async function finishMultiplayerIfNeeded(room = null) {
   if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
     return false;
@@ -874,6 +868,7 @@ async function handleRoomQuestionChange(room) {
     return;
   }
 
+  currentRoom = room;
   await syncServerClock();
 
   if (await finishMultiplayerIfNeeded(room)) {
@@ -890,8 +885,8 @@ async function handleRoomQuestionChange(room) {
   }
 
   if (remoteIndex !== currentIndex) {
+    clearMultiplayerAdvanceTimer();
     currentIndex = remoteIndex;
-    pendingQuestionIndex = null;
     isLocked = false;
     renderQuestion();
     return;
@@ -936,7 +931,6 @@ function startSoloGame() {
   score = 0;
   correctCount = 0;
   isLocked = false;
-  pendingQuestionIndex = null;
   feedbackUntil = 0;
   resultPodium.hidden = true;
   percentageRing.parentElement.hidden = false;
@@ -1028,7 +1022,7 @@ async function handleAnswer(selectedButton, correctAnswer) {
 
     try {
       // Envia a resposta para o Supabase
-      const { data, error } = await submitMultiplayerAnswer(selectedAnswer, timeLeft);
+      const { data, error } = await submitMultiplayerAnswer(selectedAnswer, isCorrect);
 
       if (error) throw error;
 
@@ -1057,10 +1051,12 @@ async function handleAnswer(selectedButton, correctAnswer) {
       score = self?.score || score;
       correctCount = self?.correct_count || correctCount;
       renderLeaderboard(currentPlayers);
+      maybeScheduleMultiplayerAdvance();
 
       const roomState = await syncMultiplayerRoomState();
       if (roomState) {
         await handleRoomQuestionChange(roomState);
+        maybeScheduleMultiplayerAdvance();
       }
 
     } catch (error) {
@@ -1100,7 +1096,7 @@ async function handleTimeout() {
     waitingForMultiplayerAdvance = true;
 
     try {
-      await submitMultiplayerAnswer("", 0);
+      await submitMultiplayerAnswer("", false);
     } catch (error) {
       console.warn("Falha ao registrar timeout no multiplayer, usando fallback local:", error);
     }
@@ -1117,10 +1113,12 @@ async function handleTimeout() {
     try {
       currentPlayers = await fetchPlayers(session.roomId);
       renderLeaderboard(currentPlayers);
+      maybeScheduleMultiplayerAdvance();
       const roomState = await syncMultiplayerRoomState();
       if (roomState) {
         currentRoom = roomState;
         await handleRoomQuestionChange(roomState);
+        maybeScheduleMultiplayerAdvance();
       }
     } catch (error) {
       console.warn("Não foi possível sincronizar a sala após o timeout:", error);
@@ -1246,8 +1244,12 @@ function startTimer(timeLimit = getCurrentQuestionTimeLimit()) {
   updateTimer();
 
   timerId = window.setInterval(() => {
-    const elapsed = Math.floor((getTimerNow() - questionStartedAt) / 1000);
-    timeLeft = Math.max(0, timeLimit - elapsed);
+    if (gameMode === "multi" && currentRoom?.question_started_at) {
+      timeLeft = getSyncedTimeLeft(currentRoom);
+    } else {
+      const remainingMs = questionStartedAt + timeLimit * 1000 - getTimerNow();
+      timeLeft = Math.max(0, Math.ceil(remainingMs / 1000));
+    }
 
     updateTimer();
 
@@ -1257,7 +1259,7 @@ function startTimer(timeLimit = getCurrentQuestionTimeLimit()) {
     }
 
     if (timeLeft <= 0) {
-      handleTimeout();
+      void handleTimeout();
     }
   }, 200);
 }
