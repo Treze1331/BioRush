@@ -713,7 +713,7 @@ async function advanceMultiplayerAfterFeedback() {
 
   if (waitingForMultiplayerAdvance) {
     feedbackTimeoutId = window.setTimeout(() => {
-      void advanceMultiplayerAfterFeedback();
+      advanceToNextQuestionInMultiplayer();
     }, 1000);
   }
 }
@@ -771,16 +771,7 @@ async function handleAnswer(selectedButton, correctAnswer) {
     }
 
     feedbackTimeoutId = window.setTimeout(() => {
-      if (shouldAdvanceLocallyForSinglePlayerRoom()) {
-        currentIndex += 1;
-        if (currentIndex < TOTAL_QUESTIONS) {
-          renderQuestion();
-        } else {
-          void showMultiplayerResults();
-        }
-      } else {
-        void advanceMultiplayerAfterFeedback();
-      }
+      advanceToNextQuestionInMultiplayer();
     }, FEEDBACK_DELAY);
     return;
   }
@@ -834,16 +825,7 @@ async function handleTimeout() {
     }
 
     feedbackTimeoutId = window.setTimeout(() => {
-      if (shouldAdvanceLocallyForSinglePlayerRoom()) {
-        currentIndex += 1;
-        if (currentIndex < TOTAL_QUESTIONS) {
-          renderQuestion();
-        } else {
-          void showMultiplayerResults();
-        }
-      } else {
-        void advanceMultiplayerAfterFeedback();
-      }
+      advanceToNextQuestionInMultiplayer();
     }, FEEDBACK_DELAY);
     return;
   }
@@ -878,14 +860,24 @@ function scheduleNextQuestion() {
   }, FEEDBACK_DELAY);
 }
 
-function shouldAdvanceLocallyForSinglePlayerRoom() {
-  return Boolean(
-    session &&
-      gameMode === "multi" &&
-      !hasShownMultiplayerResults &&
-      Array.isArray(currentPlayers) &&
-      currentPlayers.length <= 1
-  );
+function advanceToNextQuestionInMultiplayer() {
+  if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
+    return;
+  }
+
+  const remoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
+  if (Number.isFinite(remoteIndex) && remoteIndex > currentIndex) {
+    pendingQuestionIndex = remoteIndex;
+    tryRenderPendingQuestion();
+    return;
+  }
+
+  currentIndex += 1;
+  if (currentIndex < TOTAL_QUESTIONS) {
+    renderQuestion();
+  } else {
+    void showMultiplayerResults();
+  }
 }
 
 function showSoloResults() {
