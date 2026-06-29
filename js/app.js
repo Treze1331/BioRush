@@ -266,36 +266,41 @@ function subscribeToRoom(roomId) {
   cleanupSubscriptions();
 
   roomChannel = supabase
-    .channel(`room:${roomId}`)
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
-      async (payload) => {
-        currentRoom = payload.new;
-        if (!currentRoom) {
-          return;
-        }
+  .channel(`room:${roomId}`)
+  .on(
+    "postgres_changes",
+    { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
+    async (payload) => {
+      currentRoom = payload.new;
+      if (!currentRoom) return;
 
-        const isRoomFinished = currentRoom.status === "finished" || currentRoom.current_question_index >= currentRoom.total_questions;
+      const isRoomFinished = currentRoom.status === "finished" || currentRoom.current_question_index >= currentRoom.total_questions;
 
-        if (
-          currentRoom.status === "playing" &&
-          screens.lobby.classList.contains("screen-active") &&
-          gameMode !== "multi"
-        ) {
-          await beginMultiplayerGame();
-        }
+      // Se o Host iniciou o jogo enquanto estávamos no Lobby
+      if (currentRoom.status === "playing" && screens.lobby.classList.contains("screen-active") && gameMode !== "multi") {
+        await beginMultiplayerGame();
+      }
 
-        if (currentRoom.status === "playing" && screens.game.classList.contains("screen-active")) {
-          await handleRoomQuestionChange(currentRoom);
-        }
-
-        if (isRoomFinished && screens.game.classList.contains("screen-active")) {
-          await showMultiplayerResults();
+      // Se estamos jogando e o banco atualizou a pergunta
+      if (currentRoom.status === "playing" && screens.game.classList.contains("screen-active")) {
+        const remoteIndex = Number(currentRoom.current_question_index);
+        
+        // Verifica se a pergunta avançou
+        if (remoteIndex !== currentIndex && remoteIndex < TOTAL_QUESTIONS) {
+          currentIndex = remoteIndex;
+          pendingQuestionIndex = null;
+          isLocked = false;
+          renderQuestion();
         }
       }
-    )
-    .subscribe();
+
+      // Se o jogo acabou
+      if (isRoomFinished && screens.game.classList.contains("screen-active") && !hasShownMultiplayerResults) {
+        await showMultiplayerResults();
+      }
+    }
+  )
+  .subscribe();
 
   playersChannel = supabase
     .channel(`players:${roomId}`)
@@ -509,28 +514,6 @@ async function beginMultiplayerGame() {
   showScreen("game");
   renderLeaderboard(currentPlayers);
   renderQuestion();
-  startAdvancePolling();
-}
-
-function startAdvancePolling() {
-  if (advanceIntervalId !== null) {
-    window.clearInterval(advanceIntervalId);
-  }
-
-  advanceIntervalId = window.setInterval(async () => {
-    if (!session || gameMode !== "multi" || !screens.game.classList.contains("screen-active") || hasShownMultiplayerResults) {
-      return;
-    }
-
-    try {
-      const syncedRoom = await syncMultiplayerRoomState();
-      if (syncedRoom) {
-        await handleRoomQuestionChange(syncedRoom);
-      }
-    } catch (error) {
-      console.error("Erro ao verificar o estado da sala multiplayer:", error);
-    }
-  }, 700);
 }
 
 function getSyncedTimeLeft(room) {
@@ -593,20 +576,6 @@ async function finishMultiplayerIfNeeded(room = null) {
   }
 
   return false;
-}
-
-async function syncMultiplayerRoomState() {
-  if (!session?.roomId || gameMode !== "multi") {
-    return null;
-  }
-
-  try {
-    currentRoom = await fetchRoom(session.roomId);
-    return currentRoom;
-  } catch (error) {
-    console.error("Erro ao sincronizar sala multiplayer:", error);
-    return null;
-  }
 }
 
 async function handleRoomQuestionChange(room) {
@@ -741,10 +710,10 @@ async function handleAnswer(selectedButton, correctAnswer) {
   feedbackUntil = Date.now() + FEEDBACK_DELAY;
 
   if (gameMode === "multi" && session) {
-    let submissionData = null;
     waitingForMultiplayerAdvance = true;
 
     try {
+      // Envia a resposta para o Supabase
       const { data, error } = await supabase.rpc("submit_answer", {
         p_player_id: session.playerId,
         p_client_id: clientId,
@@ -752,14 +721,27 @@ async function handleAnswer(selectedButton, correctAnswer) {
         p_time_left: timeLeft
       });
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
-      submissionData = data;
+      // Pinta a tela com a resposta correta imediatamente para dar feedback ao jogador atual
+      if (data?.is_correct) {
+        selectedButton.classList.add("correct");
+        playCorrectSound();
+      } else {
+        selectedButton.classList.add("wrong");
+        playWrongSound();
+      }
+      
+      revealAnswer(data?.correct_answer || correctAnswer, selectedButton);
+      
+      // Atualiza o Placar localmente (o subscribePlayers já fará isso também)
+      currentPlayers = await fetchPlayers(session.roomId);
+      renderLeaderboard(currentPlayers);
+      
     } catch (error) {
-      console.warn("Falha ao enviar resposta no multiplayer, usando avanço local:", error);
+      console.error("Falha ao enviar resposta no multiplayer:", error);
     }
+    return;
 
     if (submissionData?.is_correct) {
       selectedButton.classList.add("correct");
