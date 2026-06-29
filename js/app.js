@@ -771,7 +771,16 @@ async function handleAnswer(selectedButton, correctAnswer) {
     }
 
     feedbackTimeoutId = window.setTimeout(() => {
-      void advanceMultiplayerAfterFeedback();
+      if (shouldAdvanceLocallyForSinglePlayerRoom()) {
+        currentIndex += 1;
+        if (currentIndex < TOTAL_QUESTIONS) {
+          renderQuestion();
+        } else {
+          void showMultiplayerResults();
+        }
+      } else {
+        void advanceMultiplayerAfterFeedback();
+      }
     }, FEEDBACK_DELAY);
     return;
   }
@@ -825,7 +834,16 @@ async function handleTimeout() {
     }
 
     feedbackTimeoutId = window.setTimeout(() => {
-      void advanceMultiplayerAfterFeedback();
+      if (shouldAdvanceLocallyForSinglePlayerRoom()) {
+        currentIndex += 1;
+        if (currentIndex < TOTAL_QUESTIONS) {
+          renderQuestion();
+        } else {
+          void showMultiplayerResults();
+        }
+      } else {
+        void advanceMultiplayerAfterFeedback();
+      }
     }, FEEDBACK_DELAY);
     return;
   }
@@ -858,6 +876,16 @@ function scheduleNextQuestion() {
       showSoloResults();
     }
   }, FEEDBACK_DELAY);
+}
+
+function shouldAdvanceLocallyForSinglePlayerRoom() {
+  return Boolean(
+    session &&
+      gameMode === "multi" &&
+      !hasShownMultiplayerResults &&
+      Array.isArray(currentPlayers) &&
+      currentPlayers.length <= 1
+  );
 }
 
 function showSoloResults() {
