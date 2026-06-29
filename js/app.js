@@ -476,6 +476,15 @@ async function beginMultiplayerGame() {
   currentRoom = await fetchRoom(session.roomId);
   currentPlayers = await fetchPlayers(session.roomId);
 
+  await resetMultiplayerReadiness();
+  await supabase
+    .from("rooms")
+    .update({
+      question_started_at: new Date().toISOString(),
+      question_time: Number(currentRoom?.question_time ?? QUESTION_TIME)
+    })
+    .eq("id", session.roomId);
+
   const questionIndices = Array.isArray(currentRoom?.question_indices) && currentRoom.question_indices.length
     ? currentRoom.question_indices
     : Array.from({ length: TOTAL_QUESTIONS }, (_, index) => index);
@@ -516,10 +525,7 @@ function startAdvancePolling() {
     try {
       const syncedRoom = await syncMultiplayerRoomState();
       if (syncedRoom) {
-        await finishMultiplayerIfNeeded(syncedRoom);
-        if (!hasShownMultiplayerResults) {
-          await handleRoomQuestionChange(syncedRoom);
-        }
+        await handleRoomQuestionChange(syncedRoom);
       }
     } catch (error) {
       console.error("Erro ao verificar o estado da sala multiplayer:", error);
@@ -560,51 +566,15 @@ function countReadyPlayers(players = currentPlayers) {
   return players.filter((player) => Boolean(player?.has_answered_current_question)).length;
 }
 
-function shouldAdvanceMultiplayerQuestion(room) {
-  if (!room || isRoomFinished(room)) {
-    return true;
+async function resetMultiplayerReadiness() {
+  if (!session?.roomId) {
+    return;
   }
-
-  const roomIndex = Number(room.current_question_index ?? currentIndex);
-  if (roomIndex > currentIndex) {
-    return true;
-  }
-
-  const totalPlayers = Array.isArray(currentPlayers) ? currentPlayers.length : 0;
-  if (!totalPlayers) {
-    return false;
-  }
-
-  const readyPlayers = countReadyPlayers(currentPlayers);
-  return readyPlayers >= totalPlayers;
-}
-
-async function persistMultiplayerProgress(nextIndex) {
-  if (!session?.roomId || gameMode !== "multi" || hasShownMultiplayerResults) {
-    return false;
-  }
-
-  const targetIndex = Math.min(Math.max(0, Number(nextIndex) || 0), TOTAL_QUESTIONS);
 
   try {
-    const { error } = await supabase
-      .from("rooms")
-      .update({
-        current_question_index: targetIndex,
-        question_started_at: new Date().toISOString(),
-        question_time: getCurrentQuestionTimeLimit(),
-        status: "playing"
-      })
-      .eq("id", session.roomId);
-
-    if (error) {
-      throw error;
-    }
-
-    return true;
+    await supabase.from("players").update({ has_answered_current_question: false }).eq("room_id", session.roomId);
   } catch (error) {
-    console.warn("Não foi possível atualizar a sala para a próxima questão:", error);
-    return false;
+    console.warn("Não foi possível limpar o estado de resposta da sala:", error);
   }
 }
 
@@ -614,11 +584,9 @@ async function finishMultiplayerIfNeeded(room = null) {
   }
 
   const resolvedRoom = room || (await syncMultiplayerRoomState());
-  const localProgressComplete = currentIndex >= TOTAL_QUESTIONS;
   const remoteFinished = Boolean(resolvedRoom && isRoomFinished(resolvedRoom));
-  const shouldFinish = Boolean(remoteFinished || localProgressComplete);
 
-  if (shouldFinish) {
+  if (remoteFinished) {
     hasShownMultiplayerResults = true;
     await showMultiplayerResults();
     return true;
@@ -642,7 +610,7 @@ async function syncMultiplayerRoomState() {
 }
 
 async function handleRoomQuestionChange(room) {
-  if (!room) {
+  if (!room || gameMode !== "multi") {
     return;
   }
 
@@ -651,32 +619,16 @@ async function handleRoomQuestionChange(room) {
   }
 
   const remoteIndex = Number(room.current_question_index ?? currentIndex);
-  if (!isRoomFinished(room) && Number.isFinite(remoteIndex) && remoteIndex <= currentIndex) {
-    if (!shouldAdvanceMultiplayerQuestion(room)) {
-      return;
-    }
-  }
-
-  if (Number.isFinite(remoteIndex)) {
-    pendingQuestionIndex = remoteIndex;
-    tryRenderPendingQuestion();
-  }
-}
-
-function tryRenderPendingQuestion() {
-  if (pendingQuestionIndex === null || Date.now() < feedbackUntil) {
+  if (!Number.isFinite(remoteIndex)) {
     return;
   }
 
-  if (pendingQuestionIndex <= currentIndex && !isRoomFinished(currentRoom)) {
+  if (remoteIndex !== currentIndex) {
+    currentIndex = remoteIndex;
     pendingQuestionIndex = null;
-    return;
+    isLocked = false;
+    renderQuestion();
   }
-
-  currentIndex = pendingQuestionIndex;
-  pendingQuestionIndex = null;
-  isLocked = false;
-  renderQuestion();
 }
 
 function startSoloGame() {
@@ -777,29 +729,6 @@ function renderQuestion() {
   });
 }
 
-async function advanceMultiplayerAfterFeedback() {
-  if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
-    return;
-  }
-
-  const syncedRoom = await syncMultiplayerRoomState();
-  if (await finishMultiplayerIfNeeded(syncedRoom)) {
-    return;
-  }
-
-  if (syncedRoom && Number(syncedRoom.current_question_index ?? currentIndex) !== currentIndex) {
-    pendingQuestionIndex = Number(syncedRoom.current_question_index ?? currentIndex);
-    tryRenderPendingQuestion();
-    return;
-  }
-
-  if (waitingForMultiplayerAdvance) {
-    feedbackTimeoutId = window.setTimeout(() => {
-      advanceToNextQuestionInMultiplayer();
-    }, 1000);
-  }
-}
-
 async function handleAnswer(selectedButton, correctAnswer) {
   if (isLocked) {
     return;
@@ -853,6 +782,8 @@ async function handleAnswer(selectedButton, correctAnswer) {
     }
 
     try {
+      currentPlayers = await fetchPlayers(session.roomId);
+      renderLeaderboard(currentPlayers);
       const roomState = await syncMultiplayerRoomState();
       if (roomState) {
         currentRoom = roomState;
@@ -914,6 +845,8 @@ async function handleTimeout() {
     }
 
     try {
+      currentPlayers = await fetchPlayers(session.roomId);
+      renderLeaderboard(currentPlayers);
       const roomState = await syncMultiplayerRoomState();
       if (roomState) {
         currentRoom = roomState;
@@ -954,77 +887,6 @@ function scheduleNextQuestion() {
       showSoloResults();
     }
   }, FEEDBACK_DELAY);
-}
-
-function scheduleMultiplayerAdvance() {
-  if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
-    return;
-  }
-
-  clearMultiplayerAdvanceTimer();
-  multiplayerAdvancePending = true;
-  feedbackTimeoutId = window.setTimeout(() => {
-    feedbackTimeoutId = null;
-    multiplayerAdvancePending = false;
-    advanceToNextQuestionInMultiplayer();
-  }, FEEDBACK_DELAY);
-}
-
-async function advanceToNextQuestionInMultiplayer() {
-  if (!session || gameMode !== "multi" || hasShownMultiplayerResults) {
-    return;
-  }
-
-  if (waitingForMultiplayerAdvance && Date.now() < feedbackUntil) {
-    return;
-  }
-
-  const syncedRoom = await syncMultiplayerRoomState();
-  if (syncedRoom) {
-    currentRoom = syncedRoom;
-  }
-
-  const remoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
-  const nextIndex = currentIndex + 1;
-
-  if (Number.isFinite(remoteIndex) && remoteIndex > currentIndex) {
-    pendingQuestionIndex = remoteIndex;
-    tryRenderPendingQuestion();
-    return;
-  }
-
-  if (!shouldAdvanceMultiplayerQuestion(currentRoom)) {
-    return;
-  }
-
-  if (nextIndex >= TOTAL_QUESTIONS) {
-    await showMultiplayerResults();
-    return;
-  }
-
-  const syncedRemoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
-  if (Number.isFinite(syncedRemoteIndex) && syncedRemoteIndex >= nextIndex) {
-    pendingQuestionIndex = syncedRemoteIndex;
-    tryRenderPendingQuestion();
-    return;
-  }
-
-  const advanced = await persistMultiplayerProgress(nextIndex);
-  if (!advanced) {
-    currentIndex = nextIndex;
-    renderQuestion();
-    return;
-  }
-
-  currentRoom = await fetchRoom(session.roomId);
-  if (Number(currentRoom?.current_question_index ?? currentIndex) > currentIndex) {
-    pendingQuestionIndex = Number(currentRoom.current_question_index);
-    tryRenderPendingQuestion();
-    return;
-  }
-
-  currentIndex = nextIndex;
-  renderQuestion();
 }
 
 function showSoloResults() {
