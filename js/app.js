@@ -646,15 +646,15 @@ async function handleRoomQuestionChange(room) {
     return;
   }
 
+  if (await finishMultiplayerIfNeeded(room)) {
+    return;
+  }
+
   const remoteIndex = Number(room.current_question_index ?? currentIndex);
   if (!isRoomFinished(room) && Number.isFinite(remoteIndex) && remoteIndex <= currentIndex) {
     if (!shouldAdvanceMultiplayerQuestion(room)) {
       return;
     }
-  }
-
-  if (await finishMultiplayerIfNeeded(room)) {
-    return;
   }
 
   if (Number.isFinite(remoteIndex)) {
@@ -979,8 +979,13 @@ async function advanceToNextQuestionInMultiplayer() {
     return;
   }
 
+  const syncedRoom = await syncMultiplayerRoomState();
+  if (syncedRoom) {
+    currentRoom = syncedRoom;
+  }
+
   const remoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
-  const nextIndex = Math.min(currentIndex + 1, TOTAL_QUESTIONS);
+  const nextIndex = currentIndex + 1;
 
   if (Number.isFinite(remoteIndex) && remoteIndex > currentIndex) {
     pendingQuestionIndex = remoteIndex;
@@ -997,15 +1002,24 @@ async function advanceToNextQuestionInMultiplayer() {
     return;
   }
 
-  const syncedRoom = await syncMultiplayerRoomState();
-  const syncedRemoteIndex = Number(syncedRoom?.current_question_index ?? currentRoom?.current_question_index ?? currentIndex);
+  const syncedRemoteIndex = Number(currentRoom?.current_question_index ?? currentIndex);
   if (Number.isFinite(syncedRemoteIndex) && syncedRemoteIndex >= nextIndex) {
     pendingQuestionIndex = syncedRemoteIndex;
     tryRenderPendingQuestion();
     return;
   }
 
-  if (await persistMultiplayerProgress(nextIndex)) {
+  const advanced = await persistMultiplayerProgress(nextIndex);
+  if (!advanced) {
+    currentIndex = nextIndex;
+    renderQuestion();
+    return;
+  }
+
+  currentRoom = await fetchRoom(session.roomId);
+  if (Number(currentRoom?.current_question_index ?? currentIndex) > currentIndex) {
+    pendingQuestionIndex = Number(currentRoom.current_question_index);
+    tryRenderPendingQuestion();
     return;
   }
 
