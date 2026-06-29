@@ -88,6 +88,8 @@ let waitingForMultiplayerAdvance = false;
 let multiplayerAdvancePending = false;
 let serverClockOffset = 0;
 let serverClockSyncedAt = 0;
+let hostAnsweredPlayers = new Set();
+let hostAdvancePending = false;
 
 function getOrCreateClientId() {
   let stored = localStorage.getItem(CLIENT_ID_KEY);
@@ -349,7 +351,7 @@ function subscribeToRoom(roomId) {
   cleanupSubscriptions();
 
   roomChannel = supabase
-  .channel(`room:${roomId}`)
+  .channel(`room:${roomId}`, { config: { broadcast: { self: true } } })
   .on(
     "postgres_changes",
     { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
@@ -378,6 +380,12 @@ function subscribeToRoom(roomId) {
       }
     }
   )
+  .on("broadcast", { event: "player_answer" }, ({ payload }) => {
+    void handleMultiplayerAnswerBroadcast(payload);
+  })
+  .on("broadcast", { event: "game_state" }, ({ payload }) => {
+    void handleMultiplayerStateBroadcast(payload);
+  })
   .subscribe();
 
   playersChannel = supabase
@@ -558,6 +566,8 @@ async function beginMultiplayerGame() {
   hasShownMultiplayerResults = false;
   waitingForMultiplayerAdvance = false;
   multiplayerAdvancePending = false;
+  hostAnsweredPlayers = new Set();
+  hostAdvancePending = false;
   initAudio();
   startMusic();
   playStartSound();
@@ -601,6 +611,10 @@ async function beginMultiplayerGame() {
   showScreen("game");
   renderLeaderboard(currentPlayers);
   renderQuestion();
+
+  if (session.isHost) {
+    await broadcastMultiplayerState("playing");
+  }
 }
 
 function getSyncedTimeLeft(room) {
@@ -655,6 +669,187 @@ async function syncMultiplayerRoomState() {
 
   currentRoom = await fetchRoom(session.roomId);
   return currentRoom;
+}
+
+function getQuestionStartedAtIso() {
+  return new Date(getSyncedNow()).toISOString();
+}
+
+function getMultiplayerStatePayload(status = currentRoom?.status || "playing") {
+  return {
+    status,
+    questionIndex: currentIndex,
+    questionStartedAt: currentRoom?.question_started_at || getQuestionStartedAtIso(),
+    questionTime: getCurrentQuestionTimeLimit(),
+    players: currentPlayers.map((player) => ({ ...player })),
+    answeredPlayerIds: [...hostAnsweredPlayers]
+  };
+}
+
+async function broadcastMultiplayerState(status = currentRoom?.status || "playing") {
+  if (!roomChannel || !session?.isHost) {
+    return;
+  }
+
+  await roomChannel.send({
+    type: "broadcast",
+    event: "game_state",
+    payload: getMultiplayerStatePayload(status)
+  });
+}
+
+async function handleMultiplayerStateBroadcast(payload) {
+  if (!payload || gameMode !== "multi") {
+    return;
+  }
+
+  if (Array.isArray(payload.players)) {
+    currentPlayers = payload.players;
+    renderLeaderboard(currentPlayers);
+  }
+
+  currentRoom = {
+    ...(currentRoom || {}),
+    status: payload.status || "playing",
+    current_question_index: Number(payload.questionIndex ?? currentIndex),
+    question_started_at: payload.questionStartedAt || currentRoom?.question_started_at,
+    question_time: Number(payload.questionTime || currentRoom?.question_time || QUESTION_TIME),
+    total_questions: TOTAL_QUESTIONS
+  };
+
+  if (payload.status === "finished") {
+    await showMultiplayerResults();
+    return;
+  }
+
+  await handleRoomQuestionChange(currentRoom);
+}
+
+function updateHostPlayerScore(answerPayload) {
+  const playerIndex = currentPlayers.findIndex((player) => player.id === answerPayload.playerId);
+  if (playerIndex < 0) {
+    return;
+  }
+
+  const player = { ...currentPlayers[playerIndex] };
+  const question = currentQuestions[answerPayload.questionIndex];
+  const isCorrect = Boolean(question && answerPayload.answer === question.answer);
+  const timeBonus = Math.max(0, Number(answerPayload.timeLeft || 0));
+  const earnedPoints = isCorrect ? 100 + timeBonus * 5 : 0;
+
+  player.has_answered_current_question = true;
+  player.last_points = earnedPoints;
+  player.score = Number(player.score || 0) + earnedPoints;
+  player.correct_count = Number(player.correct_count || 0) + (isCorrect ? 1 : 0);
+  player.streak = isCorrect ? Number(player.streak || 0) + 1 : 0;
+
+  currentPlayers.splice(playerIndex, 1, player);
+}
+
+async function handleMultiplayerAnswerBroadcast(payload) {
+  if (!payload || gameMode !== "multi" || !session?.isHost || hostAdvancePending) {
+    return;
+  }
+
+  if (Number(payload.questionIndex) !== currentIndex || hostAnsweredPlayers.has(payload.playerId)) {
+    return;
+  }
+
+  hostAnsweredPlayers.add(payload.playerId);
+  updateHostPlayerScore(payload);
+  renderLeaderboard(currentPlayers);
+  await broadcastMultiplayerState("playing");
+
+  if (hostAnsweredPlayers.size >= currentPlayers.length) {
+    scheduleHostQuestionAdvance();
+  }
+}
+
+function markMissingPlayersAsTimedOut() {
+  if (!session?.isHost || hostAdvancePending || gameMode !== "multi") {
+    return;
+  }
+
+  currentPlayers.forEach((player) => {
+    if (hostAnsweredPlayers.has(player.id)) {
+      return;
+    }
+
+    hostAnsweredPlayers.add(player.id);
+    updateHostPlayerScore({
+      playerId: player.id,
+      questionIndex: currentIndex,
+      answer: "",
+      timeLeft: 0
+    });
+  });
+
+  void broadcastMultiplayerState("playing");
+  scheduleHostQuestionAdvance();
+}
+
+function scheduleHostQuestionAdvance() {
+  if (!session?.isHost || hostAdvancePending) {
+    return;
+  }
+
+  hostAdvancePending = true;
+  window.setTimeout(() => {
+    void advanceHostQuestion();
+  }, FEEDBACK_DELAY);
+}
+
+async function advanceHostQuestion() {
+  if (!session?.isHost || gameMode !== "multi") {
+    return;
+  }
+
+  hostAdvancePending = false;
+  hostAnsweredPlayers = new Set();
+  currentPlayers = currentPlayers.map((player) => ({
+    ...player,
+    has_answered_current_question: false
+  }));
+
+  const nextIndex = currentIndex + 1;
+  if (nextIndex >= TOTAL_QUESTIONS) {
+    currentIndex = TOTAL_QUESTIONS;
+    currentRoom = {
+      ...(currentRoom || {}),
+      status: "finished",
+      current_question_index: TOTAL_QUESTIONS
+    };
+    await broadcastMultiplayerState("finished");
+    await showMultiplayerResults();
+    return;
+  }
+
+  currentIndex = nextIndex;
+  currentRoom = {
+    ...(currentRoom || {}),
+    status: "playing",
+    current_question_index: currentIndex,
+    question_started_at: getQuestionStartedAtIso(),
+    question_time: getCurrentQuestionTimeLimit(),
+    total_questions: TOTAL_QUESTIONS
+  };
+
+  try {
+    await supabase
+      .from("rooms")
+      .update({
+        current_question_index: currentIndex,
+        question_started_at: currentRoom.question_started_at,
+        question_time: currentRoom.question_time,
+        status: "playing"
+      })
+      .eq("id", session.roomId);
+  } catch (error) {
+    console.warn("NÃ£o foi possÃ­vel persistir o avanÃ§o da pergunta:", error);
+  }
+
+  await broadcastMultiplayerState("playing");
+  renderQuestion();
 }
 
 async function finishMultiplayerIfNeeded(room = null) {
