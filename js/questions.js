@@ -114,5 +114,105 @@ export const questionPool = [
       "Ele serve apenas para o sistema urinário."
     ],
     answer: "A urina e o sêmen nunca passam ao mesmo tempo pela uretra."
+  },
+  {
+    question: "Em média, quantos dias dura um ciclo menstrual?",
+    options: [
+      "14 dias.",
+      "21 dias.",
+      "28 dias.",
+      "40 dias."
+    ],
+    answer: "28 dias."
+  },
+  {
+    question: "Como é chamado o primeiro ciclo menstrual da menina?",
+    options: [
+      "Ovulação.",
+      "Menarca.",
+      "Fecundação.",
+      "Nidação."
+    ],
+    answer: "Menarca."
+  },
+  {
+    question: "O que é a nidação?",
+    options: [
+      "A liberação do óvulo pelo ovário.",
+      "A eliminação do endométrio.",
+      "A fixação do zigoto no endométrio.",
+      "A produção de espermatozoides."
+    ],
+    answer: "A fixação do zigoto no endométrio."
+  },
+  {
+    question: "Qual é o nome da primeira célula formada após a fecundação?",
+    options: [
+      "Embrião.",
+      "Feto.",
+      "Gameta.",
+      "Zigoto."
+    ],
+    answer: "Zigoto."
+  },
+  {
+    question: "Após a nidação, por quais estruturas o embrião passa a receber nutrientes?",
+    options: [
+      "Pela uretra e pelos ovários.",
+      "Pelo cordão umbilical e pela placenta.",
+      "Pelas tubas uterinas.",
+      "Pela vagina."
+    ],
+    answer: "Pelo cordão umbilical e pela placenta."
+  },
+  {
+    question: "Em qual trimestre da gestação ocorre a formação dos principais órgãos do bebê?",
+    options: [
+      "No primeiro trimestre.",
+      "No segundo trimestre.",
+      "No terceiro trimestre.",
+      "Após o nascimento."
+    ],
+    answer: "No primeiro trimestre."
+  },
+  {
+    question: "Segundo a apresentação, em qual trimestre a mãe costuma sentir os primeiros movimentos do bebê?",
+    options: [
+      "Primeiro trimestre.",
+      "Após o parto.",
+      "Segundo trimestre.",
+      "Terceiro trimestre."
+    ],
+    answer: "Segundo trimestre."
+  },
+  {
+    question: "Qual método foi destacado como o mais eficaz para prevenir Infecções Sexualmente Transmissíveis (ISTs)?",
+    options: [
+      "Tomar antibióticos regularmente.",
+      "Usar camisinha.",
+      "Praticar exercícios físicos.",
+      "Tomar vitaminas."
+    ],
+    answer: "Usar camisinha."
+  },
+  {
+    question: "Contra qual doença a vacina oferecida pelo SUS foi destacada na apresentação?",
+    options: [
+      "Dengue.",
+      "COVID-19.",
+      "HPV.",
+      "Tuberculose."
+    ],
+    answer: "HPV."
+  },
+  {
+    question: "Qual característica diferencia o óvulo do espermatozoide, segundo a apresentação?",
+    options: [
+      "O óvulo possui cauda e é muito móvel.",
+      "O óvulo é grande e não possui movimento próprio.",
+      "O óvulo é produzido aos milhões todos os dias.",
+      "O óvulo é menor que o espermatozoide."
+    ],
+    answer: "O óvulo é grande e não possui movimento próprio."
   }
-];
+  ];
