@@ -1152,3 +1152,80 @@ body{
     filter: drop-shadow(0 12px 20px rgba(255, 74, 74, 0.3));
   }
 }
+/* Container das alternativas */
+.answers-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+@media (min-width: 768px) {
+  .answers-grid {
+    grid-template-columns: 1fr 1fr; /* Duas colunas em telas maiores */
+  }
+}
+
+/* Botão da alternativa base */
+.answer-button {
+  display: flex;
+  align-items: center;
+  text-align: left;
+  padding: 16px 24px;
+  background-color: #1e293b;
+  border: 2px solid #334155;
+  border-radius: 12px;
+  color: #f8fafc;
+  font-family: 'Poppins', sans-serif;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.answer-button:hover {
+  background-color: #273549;
+  border-color: #475569;
+  transform: translateY(-2px);
+}
+
+/* Ícones temáticos injetados via classe */
+.answer-button::before {
+  font-size: 1.5rem;
+  margin-right: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+/* Customização por alternativa (Substituindo o Kahoot) */
+.answer-button.option-a::before {
+  content: "🧬"; /* Símbolo genético/espermatozoide estilizado */
+  border: 1px solid rgba(56, 189, 248, 0.3); /* Azul claro */
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.1);
+}
+
+.answer-button.option-b::before {
+  content: "🟡"; /* Representando a célula do Óvulo maduro */
+  border: 1px solid rgba(244, 63, 94, 0.3); /* Rosa/Vermelho */
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.1);
+}
+
+.answer-button.option-c::before {
+  content: "🧪"; /* Representando os hormônios líquidos/bioquímica */
+  border: 1px solid rgba(234, 179, 8, 0.3); /* Amarelo */
+  box-shadow: 0 0 10px rgba(234, 179, 8, 0.1);
+}
+
+.answer-button.option-d::before {
+  content: "🌱"; /* Representando a fecundação / desenvolvimento embrionário */
+  border: 1px solid rgba(34, 197, 94, 0.3); /* Verde */
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.1);
+}
