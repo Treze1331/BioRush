@@ -50,11 +50,7 @@
               <button id="solo-button" class="primary-action menu-mode-button" type="button">Jogar solo</button>
             </article>
 
-            <article class="menu-card menu-card-multi menu-card-disabled" id="multiplayer-card" style="position: relative; cursor: not-allowed;">
-  <div class="lock-overlay" style="position: absolute; top: 15px; right: 15px; font-size: 1.5rem; aria-hidden='true'">
-    🔒
-  </div>
-<article class="menu-card menu-card-multi" style="position: relative;">
+            <article class="menu-card menu-card-multi" style="position: relative;">
   <div id="multiplayer-lock" class="multiplayer-overlay">
     <div class="lock-content">
       <span class="lock-icon">🔒</span>
@@ -153,8 +149,7 @@
     </section>
   </main>
 
-  <script type="module" src="js/app.js"></script>
-  <script>
+  <script type="module" src="js/app.js">
   document.addEventListener('DOMContentLoaded', () => {
   const multiplayerLock = document.getElementById('multiplayer-lock');
   const menuError = document.getElementById('menu-error');
@@ -180,6 +175,6 @@
     });
   }
 });
-</script>
+  </script>
 </body>
 </html>
