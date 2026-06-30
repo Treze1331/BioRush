@@ -901,22 +901,20 @@ function renderQuestion() {
 
   currentQuestion.options.forEach((option, index) => {
     const button = document.createElement("button");
-    const icon = document.createElement("span");
-    const text = document.createElement("span");
+const text = document.createElement("span");
 
-    button.type = "button";
-    button.className = `answer-button option-${index}`;
-    button.dataset.answer = option;
-    button.setAttribute("aria-label", `Alternativa ${index + 1}: ${option}`);
+button.type = "button";
+button.className = `answer-button option-${String.fromCharCode(97 + index)}`;
 
-    icon.className = "shape-icon";
-    icon.setAttribute("aria-hidden", "true");
-    text.className = "answer-text";
-    text.textContent = option;
+button.dataset.answer = option;
+button.setAttribute("aria-label", `Alternativa ${index + 1}: ${option}`);
 
-    button.append(icon, text);
-    button.addEventListener("click", () => handleAnswer(button, currentQuestion.answer));
-    answersGrid.appendChild(button);
+text.className = "answer-text";
+text.textContent = option;
+
+button.appendChild(text);
+button.addEventListener("click", () => handleAnswer(button, currentQuestion.answer));
+answersGrid.appendChild(button);
   });
 }
 
