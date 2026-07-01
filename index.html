@@ -51,7 +51,14 @@
               <button id="solo-button" class="primary-action menu-mode-button" type="button">Jogar solo</button>
             </article>
 
-            <article class="menu-card menu-card-multi">
+            <article class="menu-card menu-card-multi" style="position: relative;">
+  <div id="multiplayer-lock" class="multiplayer-overlay">
+    <div class="lock-content">
+      <span class="lock-icon">🔒</span>
+      <span class="lock-text">Indisponível</span>
+    </div>
+  </div>
+
   <div class="menu-card-head">
     <span class="menu-card-icon" aria-hidden="true">👥</span>
     <div>
@@ -61,13 +68,13 @@
   </div>
 
   <div class="menu-multi-actions">
-    <button id="create-room-button" class="secondary-action menu-secondary menu-mode-button" type="button">Criar sala</button>
+    <button id="create-room-button" class="secondary-action menu-secondary menu-mode-button" type="button" tabindex="-1">Criar sala</button>
 
     <div class="join-room-group">
       <label class="field-label" for="room-code-input">Código da sala</label>
       <div class="join-room-row">
-        <input id="room-code-input" class="text-input text-input-code" type="text" maxlength="6" placeholder="ABC123" autocomplete="off">
-        <button id="join-room-button" class="primary-action join-room-button" type="button">Entrar</button>
+        <input id="room-code-input" class="text-input text-input-code" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" tabindex="-1">
+        <button id="join-room-button" class="primary-action join-room-button" type="button" tabindex="-1">Entrar</button>
       </div>
     </div>
   </div>
@@ -143,6 +150,32 @@
     </section>
   </main>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="js/app.js">
+  document.addEventListener('DOMContentLoaded', () => {
+  const multiplayerLock = document.getElementById('multiplayer-lock');
+  const menuError = document.getElementById('menu-error');
+
+  if (multiplayerLock) {
+    multiplayerLock.addEventListener('click', () => {
+      if (menuError) {
+        // Exibe a mensagem de erro na interface
+        menuError.textContent = "O modo Multiplayer não está disponível no momento.";
+        menuError.removeAttribute('hidden');
+        
+        // Rola a tela levemente para o erro se necessário
+        menuError.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        // Esconde a mensagem automaticamente após 4 segundos
+        setTimeout(() => {
+          menuError.setAttribute('hidden', '');
+        }, 4000);
+      } else {
+        // Fallback de segurança caso a tag menu-error sumir do HTML
+        alert("O modo Multiplayer não está disponível no momento.");
+      }
+    });
+  }
+});
+  </script>
 </body>
 </html>
