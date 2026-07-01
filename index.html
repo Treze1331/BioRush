@@ -149,33 +149,5 @@
       </div>
     </section>
   </main>
-
-  <script type="module" src="js/app.js">
-  document.addEventListener('DOMContentLoaded', () => {
-  const multiplayerLock = document.getElementById('multiplayer-lock');
-  const menuError = document.getElementById('menu-error');
-
-  if (multiplayerLock) {
-    multiplayerLock.addEventListener('click', () => {
-      if (menuError) {
-        // Exibe a mensagem de erro na interface
-        menuError.textContent = "O modo Multiplayer não está disponível no momento.";
-        menuError.removeAttribute('hidden');
-        
-        // Rola a tela levemente para o erro se necessário
-        menuError.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-        // Esconde a mensagem automaticamente após 4 segundos
-        setTimeout(() => {
-          menuError.setAttribute('hidden', '');
-        }, 4000);
-      } else {
-        // Fallback de segurança caso a tag menu-error sumir do HTML
-        alert("O modo Multiplayer não está disponível no momento.");
-      }
-    });
-  }
-});
-  </script>
 </body>
 </html>

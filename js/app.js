@@ -77,6 +77,11 @@ let isLocked = false;
 let timeLeft = QUESTION_TIME;
 let questionStartedAt = 0;
 let lastTickSecond = null;
+// Guarda, por pergunta atual, se estamos confiando no relógio do servidor
+// (question_started_at + question_time) ou contando localmente. É definida
+// uma única vez em renderQuestion() e respeitada por startTimer() e
+// syncTimerFromRoom(), para nunca haver duas fontes de verdade divergentes.
+let useServerQuestionTiming = false;
 let timerId = null;
 let feedbackUntil = 0;
 let currentRoom = null;
@@ -837,7 +842,14 @@ async function requestMultiplayerAdvance(questionIndex) {
 
     const roomState = await syncMultiplayerRoomState();
     if (roomState) {
+      const indexBeforeSync = currentIndex;
       await handleRoomQuestionChange(roomState);
+      if (currentIndex === indexBeforeSync && Number(roomState.current_question_index) === indexBeforeSync) {
+        console.warn(
+          `[multiplayer] advance_question_if_ready respondeu sem erro, mas current_question_index no banco ` +
+            `continua ${indexBeforeSync}. Verifique se essa RPC realmente faz UPDATE em rooms (current_question_index, question_started_at) no Supabase.`
+        );
+      }
     }
   } catch (error) {
     console.warn("NÃ£o foi possÃ­vel avanÃ§ar a pergunta multiplayer:", error);
@@ -909,7 +921,7 @@ async function handleRoomQuestionChange(room) {
 }
 
 function syncTimerFromRoom(room) {
-  if (!room?.question_started_at || gameMode !== "multi") {
+  if (!room?.question_started_at || gameMode !== "multi" || !useServerQuestionTiming) {
     return;
   }
 
@@ -918,8 +930,21 @@ function syncTimerFromRoom(room) {
     return;
   }
 
+  const synced = getSyncedTimeLeft(room);
+
+  // Mesma salvaguarda de renderQuestion: se o servidor mandar um tempo já
+  // zerado para a pergunta que já está em andamento (timestamp não
+  // resetado no avanço), ignora e deixa a contagem local (já em curso)
+  // seguir até o handleTimeout local decidir.
+  if (synced <= 0 && timeLeft > 0) {
+    console.warn(
+      "[timer] syncTimerFromRoom recebeu question_started_at vencido para a pergunta em andamento; ignorando e mantendo contagem local."
+    );
+    return;
+  }
+
   questionStartedAt = startedAt;
-  timeLeft = getSyncedTimeLeft(room);
+  timeLeft = synced;
   updateTimer();
 }
 
@@ -988,11 +1013,25 @@ function renderQuestion() {
 
   const useRoomTime = gameMode === "multi" && currentRoom?.question_started_at && currentRoom?.question_time != null;
   const questionTimeLimit = getCurrentQuestionTimeLimit();
-  questionStartedAt = useRoomTime ? new Date(currentRoom.question_started_at).getTime() : getTimerNow();
   lastTickSecond = null;
-  timeLeft = useRoomTime ? getSyncedTimeLeft(currentRoom) : questionTimeLimit;
 
-  if (timeLeft <= 0 && gameMode !== "multi") {
+  useServerQuestionTiming = Boolean(useRoomTime);
+  questionStartedAt = useServerQuestionTiming ? new Date(currentRoom.question_started_at).getTime() : getTimerNow();
+  timeLeft = useServerQuestionTiming ? getSyncedTimeLeft(currentRoom) : questionTimeLimit;
+
+  // Salvaguarda: se o "question_started_at" que veio do banco já está
+  // vencido no exato momento em que a pergunta come\u00e7a a ser exibida
+  // (ex.: a RPC de avan\u00e7ar pergunta n\u00e3o atualizou esse campo no
+  // Supabase), n\u00e3o confie nele. Sem isso, o timer zera instantaneamente
+  // e a pergunta parece "travada".
+  if (timeLeft <= 0) {
+    if (useServerQuestionTiming) {
+      console.warn(
+        `[timer] question_started_at do servidor já estava vencido ao renderizar a pergunta ${currentIndex + 1}. ` +
+          "Usando contagem local como fallback — verifique se a RPC de avanço atualiza esse campo no Supabase."
+      );
+    }
+    useServerQuestionTiming = false;
     timeLeft = questionTimeLimit;
     questionStartedAt = getTimerNow();
   }
@@ -1255,7 +1294,7 @@ function startTimer(timeLimit = getCurrentQuestionTimeLimit()) {
   updateTimer();
 
   timerId = window.setInterval(() => {
-    if (gameMode === "multi" && currentRoom?.question_started_at) {
+    if (useServerQuestionTiming && currentRoom?.question_started_at) {
       timeLeft = getSyncedTimeLeft(currentRoom);
     } else {
       const remainingMs = questionStartedAt + timeLimit * 1000 - getTimerNow();
