@@ -67,6 +67,7 @@ let session = null;
 let roomChannel = null;
 let playersChannel = null;
 let advanceIntervalId = null;
+let lobbyPollIntervalId = null;
 
 let currentQuestions = [];
 let currentIndex = 0;
@@ -159,7 +160,56 @@ function cleanupSubscriptions() {
     window.clearInterval(advanceIntervalId);
     advanceIntervalId = null;
   }
+  stopLobbyPolling();
   roomSyncInFlight = false;
+}
+
+function startLobbyPolling() {
+  if (lobbyPollIntervalId !== null) {
+    return;
+  }
+
+  lobbyPollIntervalId = window.setInterval(() => {
+    void pollLobbyState();
+  }, 2000);
+}
+
+function stopLobbyPolling() {
+  if (lobbyPollIntervalId !== null) {
+    window.clearInterval(lobbyPollIntervalId);
+    lobbyPollIntervalId = null;
+  }
+}
+
+// Fallback: caso o evento Realtime de "rooms" não chegue (Realtime/Replication
+// não habilitado no Supabase para a tabela, RLS bloqueando o SELECT do canal,
+// conexão instável, etc.), este polling garante que quem está no lobby ainda
+// consegue detectar que o host iniciou a partida e avançar para o jogo.
+async function pollLobbyState() {
+  if (!session?.roomId || gameMode === "multi" || !screens.lobby.classList.contains("screen-active")) {
+    stopLobbyPolling();
+    return;
+  }
+
+  try {
+    const room = await fetchRoom(session.roomId);
+    currentRoom = room;
+
+    if (room.status === "playing") {
+      stopLobbyPolling();
+      await beginMultiplayerGame();
+      return;
+    }
+
+    currentPlayers = await fetchPlayers(session.roomId);
+    const self = currentPlayers.find((player) => player.id === session.playerId);
+    if (self) {
+      session.isHost = self.is_host;
+    }
+    renderLobby();
+  } catch (error) {
+    console.warn("Falha no polling de fallback do lobby:", error);
+  }
 }
 
 async function fetchPlayers(roomId) {
@@ -372,7 +422,11 @@ function subscribeToRoom(roomId) {
       }
     }
   )
-  .subscribe();
+  .subscribe((status, error) => {
+    if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+      console.warn(`[Realtime] canal rooms:${roomId} caiu (status=${status}).`, error || "");
+    }
+  });
 
   playersChannel = supabase
     .channel(`players:${roomId}`)
@@ -394,7 +448,14 @@ function subscribeToRoom(roomId) {
         maybeScheduleMultiplayerAdvance();
       }
     )
-    .subscribe();
+    .subscribe((status, error) => {
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        console.warn(`[Realtime] canal players:${roomId} caiu (status=${status}).`, error || "");
+      }
+    });
+
+  // Fallback caso o Realtime não esteja habilitado/permitido no Supabase.
+  startLobbyPolling();
 }
 
 async function createRoom() {
@@ -1213,6 +1274,30 @@ function restartFromResults() {
   currentPlayers = [];
   showScreen("menu");
 }
+
+window.addEventListener("pagehide", () => {
+  if (!session?.playerId) {
+    return;
+  }
+
+  try {
+    // sendBeacon não funciona com RPC/JSON do Supabase de forma confiável,
+    // então usamos fetch com keepalive para tentar entregar o leave_room
+    // mesmo com a aba fechando.
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/leave_room`, {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+      },
+      body: JSON.stringify({ p_player_id: session.playerId, p_client_id: clientId })
+    });
+  } catch (error) {
+    console.warn("Falha ao notificar saída da sala:", error);
+  }
+});
 
 nicknameInput.value = getStoredNickname();
 soloButton.addEventListener("click", startSoloGame);
