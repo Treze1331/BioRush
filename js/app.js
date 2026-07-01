@@ -469,29 +469,50 @@ async function createRoom() {
   saveNickname(nickname);
   showError(menuError, "");
 
-  const { data, error } = await supabase.rpc("create_room", {
-    p_client_id: clientId,
-    p_nickname: nickname
-  });
+  createRoomButton.disabled = true;
+  createRoomButton.textContent = "Criando sala...";
 
-  if (error) {
-    showError(menuError, error.message);
-    return;
+  try {
+    const { data, error } = await supabase.rpc("create_room", {
+      p_client_id: clientId,
+      p_nickname: nickname
+    });
+
+    if (error) {
+      console.error("[create_room] erro retornado pelo Supabase:", error);
+      showError(menuError, `Não foi possível criar a sala: ${error.message}`);
+      return;
+    }
+
+    if (!data?.room_id || !data?.player_id || !data?.code) {
+      console.error("[create_room] resposta inesperada:", data);
+      showError(menuError, "A sala foi criada, mas a resposta do servidor veio incompleta. Tente novamente.");
+      return;
+    }
+
+    session = {
+      roomId: data.room_id,
+      playerId: data.player_id,
+      code: data.code,
+      isHost: true
+    };
+
+    currentRoom = await fetchRoom(session.roomId);
+    currentPlayers = await fetchPlayers(session.roomId);
+    subscribeToRoom(session.roomId);
+    showError(lobbyError, "");
+    showScreen("lobby");
+    renderLobby();
+  } catch (error) {
+    // Erros de rede, CORS, projeto Supabase pausado, apikey inválida, etc.
+    // caem aqui — sem este catch a Promise rejeitava silenciosamente e o
+    // botão "não fazia nada" aos olhos do usuário.
+    console.error("[create_room] falha inesperada:", error);
+    showError(menuError, "Não foi possível conectar ao servidor. Verifique sua internet e tente novamente.");
+  } finally {
+    createRoomButton.disabled = false;
+    createRoomButton.textContent = "Criar sala";
   }
-
-  session = {
-    roomId: data.room_id,
-    playerId: data.player_id,
-    code: data.code,
-    isHost: true
-  };
-
-  currentRoom = await fetchRoom(session.roomId);
-  currentPlayers = await fetchPlayers(session.roomId);
-  subscribeToRoom(session.roomId);
-  showError(lobbyError, "");
-  showScreen("lobby");
-  renderLobby();
 }
 
 async function joinRoom() {
@@ -512,32 +533,50 @@ async function joinRoom() {
   saveNickname(nickname);
   showError(menuError, "");
 
-  const { data, error } = await supabase.rpc("join_room", {
-    p_code: code,
-    p_client_id: clientId,
-    p_nickname: nickname
-  });
+  joinRoomButton.disabled = true;
+  joinRoomButton.textContent = "Entrando...";
 
-  if (error) {
-    showError(menuError, error.message);
-    return;
+  try {
+    const { data, error } = await supabase.rpc("join_room", {
+      p_code: code,
+      p_client_id: clientId,
+      p_nickname: nickname
+    });
+
+    if (error) {
+      console.error("[join_room] erro retornado pelo Supabase:", error);
+      showError(menuError, `Não foi possível entrar na sala: ${error.message}`);
+      return;
+    }
+
+    if (!data?.room_id || !data?.player_id || !data?.code) {
+      console.error("[join_room] resposta inesperada:", data);
+      showError(menuError, "Entramos na sala, mas a resposta do servidor veio incompleta. Tente novamente.");
+      return;
+    }
+
+    session = {
+      roomId: data.room_id,
+      playerId: data.player_id,
+      code: data.code,
+      isHost: false
+    };
+
+    currentRoom = await fetchRoom(session.roomId);
+    currentPlayers = await fetchPlayers(session.roomId);
+    const self = currentPlayers.find((player) => player.id === session.playerId);
+    session.isHost = Boolean(self?.is_host);
+    subscribeToRoom(session.roomId);
+    showError(lobbyError, "");
+    showScreen("lobby");
+    renderLobby();
+  } catch (error) {
+    console.error("[join_room] falha inesperada:", error);
+    showError(menuError, "Não foi possível conectar ao servidor. Verifique sua internet e tente novamente.");
+  } finally {
+    joinRoomButton.disabled = false;
+    joinRoomButton.textContent = "Entrar";
   }
-
-  session = {
-    roomId: data.room_id,
-    playerId: data.player_id,
-    code: data.code,
-    isHost: false
-  };
-
-  currentRoom = await fetchRoom(session.roomId);
-  currentPlayers = await fetchPlayers(session.roomId);
-  const self = currentPlayers.find((player) => player.id === session.playerId);
-  session.isHost = Boolean(self?.is_host);
-  subscribeToRoom(session.roomId);
-  showError(lobbyError, "");
-  showScreen("lobby");
-  renderLobby();
 }
 
 async function updateNicknameInRoom() {
